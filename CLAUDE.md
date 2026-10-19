@@ -5,6 +5,7 @@
 - Use the `ponytail` skill for all coding tasks: smallest change that fully solves the task, no over-engineering.
 - Use the `antislop` skill (plus `antislop-code` for code comments) to keep AI slop out of code.
 - Use the `caveman` skill for replies: terse, answer first, keep every technical fact.
+- Delegate independent subtasks to subagents and run them in parallel (e.g. separate chapters, a search while you edit elsewhere). Keep work that depends on a previous step's result in the main thread.
 
 ## Git commits
 
