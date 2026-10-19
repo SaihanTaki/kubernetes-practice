@@ -51,8 +51,8 @@ test("architecture diagram walkthrough and details", async ({ page }) => {
   await page.goto("/chapters/architecture");
   await page.getByRole("button", { name: "Start walkthrough" }).click();
   await expect(page.getByText("Step 1 of 8")).toBeVisible();
-  const prev = page.getByRole("button", { name: "Previous" });
-  const next = page.getByRole("button", { name: "Next" });
+  const prev = page.getByRole("button", { name: "Previous step" });
+  const next = page.getByRole("button", { name: "Next step" });
   await expect(prev).toBeDisabled();
   await next.click();
   await expect(page.getByText("Step 2 of 8")).toBeVisible();
@@ -63,7 +63,7 @@ test("architecture diagram walkthrough and details", async ({ page }) => {
   await page.getByRole("button", { name: "Show all" }).click();
   await expect(page.getByRole("button", { name: "Start walkthrough" })).toBeVisible();
 
-  await page.locator(".react-flow__node", { hasText: /^etcd$/ }).click();
+  await page.getByRole("button", { name: /^etcd / }).click();
   await expect(page.getByText(/consistent key-value store/)).toBeVisible();
 });
 
@@ -127,12 +127,13 @@ test("terminal history recalls previous commands", async ({ page }) => {
 
 test("diagram follows the cluster and shows details", async ({ page }) => {
   await page.goto("/playground");
-  await expect(page.locator(".react-flow__node")).toHaveCount(5);
-  await page.locator(".react-flow__node", { hasText: "toolbox" }).click();
+  const pods = page.getByRole("button", { name: /^Pod / });
+  await expect(pods).toHaveCount(3);
+  await page.getByRole("button", { name: /toolbox/ }).click();
   await expect(page.getByText(/Controlled By:\s+<none>/)).toBeVisible();
 
   await command(page, "kubectl delete pod toolbox");
-  await expect(page.locator(".react-flow__node")).toHaveCount(4);
+  await expect(pods).toHaveCount(2);
   await expect(page.getByText("That resource no longer exists.")).toBeVisible();
   await noHorizontalOverflow(page);
 });
@@ -146,7 +147,7 @@ test("quiz gives feedback and can be retried", async ({ page }) => {
   await expect(quiz.getByText("Not quite.")).toBeVisible();
   await expect(quiz.getByText(/Desired state is still 3/)).toBeVisible();
   await quiz.getByRole("button", { name: "Retry quiz" }).click();
-  await expect(quiz.getByText("0 of 4 answered.")).toBeVisible();
+  await expect(quiz.getByText("0 of 22 answered.")).toBeVisible();
 });
 
 test("cheatsheet searches and copies", async ({ page, context }) => {

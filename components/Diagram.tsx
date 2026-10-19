@@ -1,44 +1,84 @@
 "use client";
 
-import { Handle, Position, ReactFlow, type Edge, type Node, type NodeProps } from "@xyflow/react";
-import "@xyflow/react/dist/style.css";
 import { useState } from "react";
 import { diagrams } from "@/content/chapters";
-import type { DiagramDef } from "@/content/types";
-
-// Only edge lines fade during a step; dimming text would drop it below WCAG AA contrast.
-const DIM = 0.25;
-
-// The built-in group node renders nothing, so override it to show the label.
-function GroupNode({ data }: NodeProps<Node<{ label: string }>>) {
-  return <div className="px-2 py-1 text-left text-xs text-muted">{data.label}</div>;
-}
-// Handles on every side, hidden, so each edge can leave from the side facing its target.
-const SIDES = [Position.Top, Position.Right, Position.Bottom, Position.Left];
-function BoxNode({ data }: NodeProps<Node<{ label: string }>>) {
-  return (
-    <>
-      <div className="text-left text-sm">{data.label}</div>
-      {SIDES.flatMap((side) => [
-        <Handle key={`s-${side}`} id={`s-${side}`} type="source" position={side} className="opacity-0" />,
-        <Handle key={`t-${side}`} id={`t-${side}`} type="target" position={side} className="opacity-0" />,
-      ])}
-    </>
-  );
-}
-const nodeTypes = { group: GroupNode, box: BoxNode };
-
-function sides(from: { x: number; y: number }, to: { x: number; y: number }) {
-  const dx = to.x - from.x;
-  const dy = to.y - from.y;
-  if (Math.abs(dx) > Math.abs(dy)) return dx > 0 ? [Position.Right, Position.Left] : [Position.Left, Position.Right];
-  return dy > 0 ? [Position.Bottom, Position.Top] : [Position.Top, Position.Bottom];
-}
+import type { DiagramBox, DiagramDef } from "@/content/types";
 
 export function Diagram({ id }: { id: string }) {
   const def = diagrams[id];
   if (!def) throw new Error(`Unknown diagram "${id}"`);
   return <DiagramView def={def} />;
+}
+
+function find(box: DiagramBox, id: string): DiagramBox | undefined {
+  if (box.id === id) return box;
+  for (const child of box.children ?? []) {
+    const hit = find(child, id);
+    if (hit) return hit;
+  }
+}
+
+function Arrow({ down }: { down: boolean }) {
+  return (
+    <span aria-hidden className="self-center font-mono text-lg leading-none text-muted">
+      <span className={down ? "" : "sm:hidden"}>↓</span>
+      {!down && <span className="hidden sm:inline">→</span>}
+    </span>
+  );
+}
+
+type BoxProps = { box: DiagramBox; lit: Set<string>; selected: string | null; onSelect: (id: string) => void };
+
+function Box({ box, lit, selected, onSelect }: BoxProps) {
+  const ring = lit.has(box.id) ? "border-2 border-accent bg-accent/10" : "border-border";
+  const pressed = selected === box.id;
+  const header = (
+    <>
+      <span className="block font-medium">{box.label}</span>
+      {box.sub && <span className="block text-xs text-muted">{box.sub}</span>}
+    </>
+  );
+
+  if (!box.children?.length) {
+    return (
+      <button
+        type="button"
+        onClick={() => onSelect(box.id)}
+        aria-pressed={pressed}
+        className={`min-h-11 rounded-md border bg-surface px-3 py-2 text-left text-sm sm:min-w-[9rem] sm:flex-1 ${ring} ${pressed ? "outline-2 outline-offset-2 outline-accent" : ""}`}
+      >
+        {header}
+      </button>
+    );
+  }
+
+  const column = box.layout === "column";
+  const children = box.children.flatMap((child, i) => [
+    ...(box.flow && i > 0 ? [<Arrow key={`arrow-${child.id}`} down={column} />] : []),
+    <Box key={child.id} box={child} lit={lit} selected={selected} onSelect={onSelect} />,
+  ]);
+  const inner = (
+    <div className={`flex flex-col gap-3 ${column ? "" : "sm:flex-row sm:flex-wrap sm:items-stretch"}`}>{children}</div>
+  );
+  if (!box.label) return <div className="flex flex-col gap-3 sm:flex-1">{inner}</div>;
+
+  return (
+    <div role="group" aria-label={box.label} className={`rounded-lg border border-dashed bg-code/60 p-3 sm:flex-1 ${ring}`}>
+      {box.detail ? (
+        <button
+          type="button"
+          onClick={() => onSelect(box.id)}
+          aria-pressed={pressed}
+          className={`mb-3 block text-left text-sm ${pressed ? "outline-2 outline-offset-2 outline-accent" : ""}`}
+        >
+          {header}
+        </button>
+      ) : (
+        <div className="mb-3 text-sm">{header}</div>
+      )}
+      {inner}
+    </div>
+  );
 }
 
 function DiagramView({ def }: { def: DiagramDef }) {
@@ -47,75 +87,22 @@ function DiagramView({ def }: { def: DiagramDef }) {
   const [stepIndex, setStepIndex] = useState<number | null>(null);
   const steps = def.steps ?? [];
   const step = stepIndex === null ? null : steps[stepIndex];
-  const lit = new Set(step?.nodes);
-  const dim = (on: boolean) => (step && !on ? { opacity: DIM } : {});
-
-  const nodes: Node[] = [
-    ...(def.groups ?? []).map((g) => ({
-      id: g.id,
-      type: "group",
-      position: { x: g.x, y: g.y },
-      data: { label: g.label },
-      style: { width: g.width, height: g.height },
-      zIndex: -1,
-      selectable: false,
-      focusable: false,
-    })),
-    ...def.nodes.map((n) => ({
-      id: n.id,
-      position: { x: n.x, y: n.y },
-      type: "box",
-      // Keep the built-in default node look for the custom type.
-      className: "react-flow__node-default",
-      data: { label: n.label },
-      style: {
-        width: 170,
-        ...(lit.has(n.id) && { borderColor: "var(--accent)", borderWidth: 2, boxShadow: "0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent)" }),
-      },
-      ariaLabel: n.label,
-      selected: n.id === selected,
-    })),
-  ];
-  const byId = new Map(def.nodes.map((n) => [n.id, n]));
-  const edges: Edge[] = def.edges.map((e, i) => {
-    const [out, into] = sides(byId.get(e.from)!, byId.get(e.to)!);
-    return {
-      id: `${i}-${e.from}-${e.to}`,
-      type: "straight",
-      source: e.from,
-      target: e.to,
-      sourceHandle: `s-${out}`,
-      targetHandle: `t-${into}`,
-      label: e.label,
-      style: dim(lit.has(e.from) && lit.has(e.to)),
-    };
-  });
-  const node = def.nodes.find((n) => n.id === selected);
-  const select = (n: Node) => n.type !== "group" && setSelected(n.id);
+  const lit = new Set(step?.highlight);
+  const box = selected ? find(def.root, selected) : undefined;
   const button = "min-h-11 rounded-md border border-border px-4 hover:bg-code disabled:opacity-50 disabled:hover:bg-transparent";
 
   return (
     <div className="my-6">
-      <div className="grid gap-4 lg:grid-cols-[1fr_20rem]">
-        <div className="h-[26rem] rounded-md border border-border bg-surface" aria-label="Diagram">
-          <ReactFlow
-            nodes={nodes}
-            edges={edges}
-            nodeTypes={nodeTypes}
-            fitView
-            colorMode="system"
-            nodesDraggable={false}
-            nodesConnectable={false}
-            onNodeClick={(_, n) => select(n)}
-            onSelectionChange={({ nodes }) => nodes[0] && select(nodes[0])}
-          />
+      <div className="grid gap-4 lg:grid-cols-[1fr_18rem]">
+        <div className="min-w-0 rounded-md border border-border bg-surface p-3">
+          <Box box={def.root} lit={lit} selected={selected} onSelect={setSelected} />
         </div>
         <div className="rounded-md border border-border bg-surface p-3">
           <h4 className="text-sm font-semibold">Details</h4>
-          {node ? (
+          {box ? (
             <>
-              <p className="mt-2 font-medium">{node.label}</p>
-              <p className="mt-1 text-sm">{node.detail}</p>
+              <p className="mt-2 font-medium">{box.label}</p>
+              <p className="mt-1 text-sm">{box.detail ?? box.sub}</p>
             </>
           ) : (
             <p className="mt-2 text-sm text-muted">Select a box in the diagram to see what it does.</p>
@@ -133,7 +120,7 @@ function DiagramView({ def }: { def: DiagramDef }) {
             ) : (
               <>
                 <button type="button" className={button} disabled={stepIndex === 0} onClick={() => setStepIndex(stepIndex - 1)}>
-                  Previous
+                  Previous step
                 </button>
                 <button
                   type="button"
@@ -141,7 +128,7 @@ function DiagramView({ def }: { def: DiagramDef }) {
                   disabled={stepIndex === steps.length - 1}
                   onClick={() => setStepIndex(stepIndex + 1)}
                 >
-                  Next
+                  Next step
                 </button>
                 <button type="button" className={button} onClick={() => setStepIndex(null)}>
                   Show all

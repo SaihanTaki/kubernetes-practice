@@ -5,6 +5,7 @@ import { chapters, diagrams, labs, manifests, quizzes } from "@/content/chapters
 import { cheatsheet } from "@/content/cheatsheet";
 import { check } from "@/lib/labs";
 import { manifestSchema } from "@/lib/manifest-schema";
+import type { DiagramBox } from "@/content/types";
 import { createCluster, run } from "@/lib/simulator";
 
 const unique = (ids: string[]) => expect(new Set(ids).size).toBe(ids.length);
@@ -46,11 +47,12 @@ describe("manifests", () => {
 describe("diagrams", () => {
   it("has unique ids", () => unique(Object.keys(diagrams)));
 
-  it.each(Object.values(diagrams))("$id references only its own nodes", (d) => {
-    const ids = d.nodes.map((n) => n.id);
+  it.each(Object.values(diagrams))("$id has unique box ids and steps that point at them", (d) => {
+    const ids: string[] = [];
+    const walk = (b: DiagramBox) => (ids.push(b.id), b.children?.forEach(walk));
+    walk(d.root);
     unique(ids);
-    for (const e of d.edges) expect(ids).toEqual(expect.arrayContaining([e.from, e.to]));
-    for (const s of d.steps ?? []) expect(ids).toEqual(expect.arrayContaining(s.nodes));
+    for (const s of d.steps ?? []) expect(ids).toEqual(expect.arrayContaining(s.highlight));
   });
 });
 

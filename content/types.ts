@@ -20,14 +20,27 @@ export type Manifest = {
   notes: { line: number; text: string }[];
 };
 
+/** A box in an HTML diagram. A box with children is a group; one without is a card. */
+export type DiagramBox = {
+  id: string;
+  /** Empty for a layout-only group with no border or heading. */
+  label: string;
+  /** Small second line, such as a status or "one IP per Pod". */
+  sub?: string;
+  /** Shown in the Details panel when the box is selected. */
+  detail?: string;
+  /** Children side by side (default) or stacked. */
+  layout?: "row" | "column";
+  /** Draw arrows between children, for a sequence or a request path. */
+  flow?: boolean;
+  children?: DiagramBox[];
+};
+
 export type DiagramDef = {
   id: string;
-  /** Background boxes such as "Control plane". Drawn behind nodes, not clickable. */
-  groups?: { id: string; label: string; x: number; y: number; width: number; height: number }[];
-  nodes: { id: string; label: string; x: number; y: number; detail: string }[];
-  edges: { from: string; to: string; label?: string }[];
-  /** Optional walkthrough: each step highlights some nodes. */
-  steps?: { title: string; text: string; nodes: string[] }[];
+  root: DiagramBox;
+  /** Optional walkthrough: each step highlights some boxes by id. */
+  steps?: { title: string; text: string; highlight: string[] }[];
 };
 
 /** Everything a chapter needs besides its MDX prose. */

@@ -108,72 +108,84 @@ spec:
   diagrams: [
     {
       id: "pod-anatomy",
-      groups: [{ id: "pod", label: "Pod api (one IP)", x: 0, y: 0, width: 400, height: 250 }],
-      nodes: [
-        {
-          id: "main",
-          label: "Main container: api",
-          x: 20,
-          y: 40,
-          detail: "Runs the application image. Most Pods have only this one container.",
-        },
-        {
-          id: "sidecar",
-          label: "Sidecar container (optional)",
-          x: 210,
-          y: 40,
-          detail: "A helper such as a log shipper or proxy. It starts, stops, and is scheduled together with the main container.",
-        },
-        {
-          id: "network",
-          label: "Shared network",
-          x: 20,
-          y: 150,
-          detail: "Every container in the Pod uses the same IP address and reaches the others on localhost.",
-        },
-        {
-          id: "volume",
-          label: "Shared volume",
-          x: 210,
-          y: 150,
-          detail: "A volume declared in the Pod can be mounted by several containers, so they can exchange files.",
-        },
-        {
-          id: "kubelet",
-          label: "Node: kubelet",
-          x: 500,
-          y: 95,
-          detail: "The agent on the node the Pod was scheduled to. It pulls images, starts containers, and restarts them according to restartPolicy.",
-        },
-      ],
-      edges: [
-        { from: "kubelet", to: "main", label: "starts, restarts" },
-        { from: "kubelet", to: "sidecar" },
-        { from: "main", to: "network", label: "localhost" },
-        { from: "sidecar", to: "network" },
-        { from: "main", to: "volume", label: "mounts" },
-        { from: "sidecar", to: "volume" },
-      ],
+      root: {
+        id: "layout",
+        label: "",
+        flow: true,
+        children: [
+          {
+            id: "kubelet",
+            label: "Node: kubelet",
+            sub: "starts and restarts containers",
+            detail: "The agent on the node the Pod was scheduled to. It pulls images, starts containers, and restarts them according to restartPolicy.",
+          },
+          {
+            id: "pod",
+            label: "Pod api",
+            sub: "one IP address, shared by every container",
+            detail: "The smallest unit Kubernetes schedules. Everything inside is placed on the same node and shares one network identity.",
+            layout: "column",
+            children: [
+              {
+                id: "containers",
+                label: "",
+                children: [
+                  {
+                    id: "main",
+                    label: "Main container: api",
+                    sub: "listens on :8080",
+                    detail: "Runs the application image. Most Pods have only this one container.",
+                  },
+                  {
+                    id: "sidecar",
+                    label: "Sidecar container",
+                    sub: "optional, e.g. log shipper",
+                    detail: "A helper such as a log shipper or proxy. It starts, stops, and is scheduled together with the main container.",
+                  },
+                ],
+              },
+              {
+                id: "shared",
+                label: "",
+                children: [
+                  {
+                    id: "network",
+                    label: "Shared network",
+                    sub: "same IP, reach each other on localhost",
+                    detail: "Every container in the Pod uses the same IP address and reaches the others on localhost, so two containers cannot listen on the same port.",
+                  },
+                  {
+                    id: "volume",
+                    label: "Shared volume",
+                    sub: "mounted by both containers",
+                    detail: "A volume declared in the Pod can be mounted by several containers, so they can exchange files.",
+                  },
+                ],
+              },
+            ],
+          },
+        ],
+      },
       steps: [
         {
           title: "Scheduled (Pending)",
           text: "The scheduler assigns the Pod to a node. The Pod is Pending until all its containers have been created.",
-          nodes: ["kubelet"],
+          highlight: ["kubelet", "pod"],
         },
         {
           title: "Image pulled, containers created (ContainerCreating)",
           text: "The kubelet on that node pulls the images, sets up the shared network and volumes, and creates the containers. kubectl get pods shows ContainerCreating. If the pull fails it shows ImagePullBackOff.",
-          nodes: ["kubelet", "network", "volume"],
+          highlight: ["kubelet", "network", "volume"],
         },
         {
           title: "Running",
           text: "The containers have started. They share the Pod's IP and the mounted volume.",
-          nodes: ["main", "sidecar", "network", "volume"],
+          highlight: ["main", "sidecar", "network", "volume"],
         },
         {
           title: "Crash and restart",
           text: "If the main container exits, the kubelet restarts it in place according to restartPolicy. If it keeps crashing, the kubelet waits longer between restarts and the Pod shows CrashLoopBackOff.",
-          nodes: ["kubelet", "main"],
+          highlight: ["kubelet", "main"],
         },
       ],
     },
