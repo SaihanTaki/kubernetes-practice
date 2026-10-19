@@ -43,7 +43,7 @@ Use the following unless the existing repository provides a strong reason to cho
 - **Language:** TypeScript with strict type checking
 - **Styling:** Tailwind CSS
 - **UI components:** shadcn/ui where useful
-- **Interactive diagrams:** React Flow (`@xyflow/react`)
+- **Interactive diagrams:** HTML/CSS box diagrams (nested, clickable boxes with step walkthroughs; no canvas library)
 - **Terminal UI:** xterm.js or a lightweight custom terminal component
 - **YAML parsing:** a maintained YAML parser such as `yaml`
 - **Content:** Markdown/MDX and typed TypeScript or JSON data files
@@ -102,7 +102,7 @@ Do not add other top-level chapters to the initial release. Concepts such as lab
 
 ### 5.3 Interactive Diagrams
 
-Use React Flow for diagrams with clickable nodes, edges, pan, and zoom.
+Build diagrams as HTML/CSS boxes: nested groups, arrows between steps of a flow, clickable boxes with details, and step-by-step highlighting. They must keep full-size text and reflow on small screens.
 
 Initial diagrams should support the four launch chapters:
 
@@ -128,7 +128,7 @@ Do not try to make every diagram a fully simulated cluster. Use focused, purpose
 
 Support:
 
-- Single-answer multiple-choice questions for the MVP.
+- Single-answer multiple-choice questions for the MVP, at least 20 per chapter, shown one at a time.
 - Immediate correct/incorrect feedback.
 - Explanation after answering.
 - Retry/reset functionality.
