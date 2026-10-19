@@ -1,4 +1,5 @@
 import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
 import { Lab } from "@/components/Lab";
 import { Quiz } from "@/components/Quiz";
 import { YamlWalkthrough } from "@/components/YamlWalkthrough";
@@ -12,6 +13,10 @@ A ReplicaSet keeps a fixed number of identical Pods running. You give it three t
 - The right number: it does nothing.
 
 This loop runs continuously, not once. A Pod that crashes beyond recovery, gets deleted, or disappears with its node is noticed and replaced.
+
+The diagram shows one pass of that loop. Step through it to follow what happens when one of three Pods is deleted.
+
+<Diagram id="rs-reconcile" />
 
 ```text
 ReplicaSet frontend      replicas: 3, selector app=frontend
@@ -39,6 +44,10 @@ Two consequences follow from matching by label:
 - **A standalone Pod with matching labels can be adopted.** If you create a bare Pod labelled `app: frontend` and it has no other owner, the ReplicaSet takes ownership of it and counts it. With `replicas: 3` and three Pods already running, the ReplicaSet now sees four and deletes one to get back to three. The one it deletes may be any of them.
 - **Removing the label releases a Pod.** If you change a managed Pod's labels so they no longer match, the ReplicaSet stops counting it and creates a replacement. The old Pod keeps running on its own, which is occasionally useful for debugging a misbehaving Pod outside the pool.
 
+Here both happen in one namespace: a relabelled Pod is released, and a standalone Pod with the right label is adopted in its place. Each Pod box shows its labels.
+
+<Diagram id="rs-selector" />
+
 <Callout title="Common mistake: reusing labels across workloads">
   Give each ReplicaSet a selector that only its own Pods carry. If two workloads share a label like `app: web`, one
   can adopt or delete Pods you meant for the other.
@@ -60,6 +69,10 @@ frontend   5         5         2       10m
 ```
 
 `DESIRED` is what you asked for, `CURRENT` is how many Pods exist, and `READY` is how many are ready to serve. Scaling down works the same way in reverse: the controller deletes Pods until the count matches, preferring Pods that are not ready yet.
+
+Step through a scale from 2 to 5 to see how the three columns change.
+
+<Diagram id="rs-scale" />
 
 ## Deleting a Pod
 
