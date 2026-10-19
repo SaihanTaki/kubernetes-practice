@@ -131,6 +131,72 @@ export const cheatsheet: CheatsheetEntry[] = [
     relatedChapter: "deployments",
   },
   {
+    id: "get-nodes",
+    title: "List nodes",
+    category: "Cluster",
+    keywords: ["get", "nodes", "control plane", "worker", "kubelet"],
+    explanation: "Shows each node with its status, roles, and kubelet version. A node is Ready when its kubelet reports in.",
+    code: "kubectl get nodes",
+    language: "bash",
+    simulated: true,
+    relatedChapter: "architecture",
+  },
+  {
+    id: "api-resources",
+    title: "List resource types and API groups",
+    category: "Cluster",
+    keywords: ["api-resources", "apiVersion", "group", "kind", "shortnames"],
+    explanation: "Shows each kind with its short name and API group. Use it to find the apiVersion for a manifest.",
+    code: "kubectl api-resources",
+    language: "bash",
+    simulated: false,
+    relatedChapter: "architecture",
+  },
+  {
+    id: "get-pod-yaml",
+    title: "Print a Pod as YAML",
+    category: "Inspect",
+    keywords: ["yaml", "pod", "status", "spec", "-o"],
+    explanation: "The status block below spec is filled in by the kubelet and control plane, not by you.",
+    code: "kubectl get pod toolbox -o yaml",
+    language: "bash",
+    simulated: true,
+    relatedChapter: "architecture",
+  },
+  {
+    id: "describe-pod",
+    title: "Describe a Pod",
+    category: "Pods",
+    keywords: ["describe", "pod", "waiting", "reason", "restart count", "controlled by", "CrashLoopBackOff"],
+    explanation: "Shows the node, image, container state with its waiting reason, Restart Count, and Controlled By.",
+    code: "kubectl describe pod toolbox",
+    language: "bash",
+    simulated: true,
+    relatedChapter: "pods",
+  },
+  {
+    id: "logs",
+    title: "Read container logs",
+    category: "Pods",
+    keywords: ["logs", "crash", "previous", "CrashLoopBackOff"],
+    explanation: "Prints what the container wrote to stdout and stderr. --previous shows the run before the last restart.",
+    code: "kubectl logs toolbox\nkubectl logs toolbox --previous",
+    language: "bash",
+    simulated: false,
+    relatedChapter: "pods",
+  },
+  {
+    id: "scale-replicaset",
+    title: "Scale a ReplicaSet",
+    category: "ReplicaSets",
+    keywords: ["scale", "replicaset", "rs", "replicas"],
+    explanation: "The controller creates or deletes Pods until the count matches. Scale to 0 to stop the app.",
+    code: "kubectl scale replicaset frontend --replicas=5",
+    language: "bash",
+    simulated: true,
+    relatedChapter: "replicasets",
+  },
+  {
     id: "apply",
     title: "Create or update from a file",
     category: "Manifests",
@@ -166,5 +232,58 @@ spec:
     language: "yaml",
     simulated: false,
     relatedChapter: "deployments",
+  },
+  {
+    id: "pod-yaml",
+    title: "Minimal Pod",
+    category: "Manifests",
+    keywords: ["pod", "yaml", "resources", "requests", "limits", "restartPolicy", "manifest"],
+    explanation: "Requests decide where the Pod is scheduled. Limits are enforced while it runs.",
+    code: `apiVersion: v1
+kind: Pod
+metadata:
+  name: api
+spec:
+  restartPolicy: Always
+  containers:
+    - name: api
+      image: nginx:1.27
+      resources:
+        requests:
+          cpu: "100m"
+          memory: "128Mi"
+        limits:
+          cpu: "500m"
+          memory: "256Mi"`,
+    language: "yaml",
+    simulated: false,
+    relatedChapter: "pods",
+  },
+  {
+    id: "replicaset-yaml",
+    title: "Minimal ReplicaSet",
+    category: "Manifests",
+    keywords: ["replicaset", "yaml", "selector", "template", "manifest"],
+    explanation: "selector.matchLabels must match the template labels. Usually a Deployment creates this for you.",
+    code: `apiVersion: apps/v1
+kind: ReplicaSet
+metadata:
+  name: frontend
+spec:
+  replicas: 3
+  selector:
+    matchLabels:
+      app: frontend
+  template:
+    metadata:
+      labels:
+        app: frontend
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27`,
+    language: "yaml",
+    simulated: false,
+    relatedChapter: "replicasets",
   },
 ];

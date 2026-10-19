@@ -93,6 +93,7 @@ describe("cheatsheet", () => {
   it.each(cheatsheet.filter((e) => e.simulated))("$id runs in the simulator", (e) => {
     let c = createCluster({
       deployments: [{ name: "web", replicas: 2, image: "nginx:1.27", labels: { app: "web" } }],
+      replicaSets: [{ name: "frontend", replicas: 2, image: "nginx:1.27", labels: { app: "frontend" } }],
       pods: [{ name: "toolbox", image: "busybox:1.36" }],
     });
     for (const cmd of e.code.split("\n")) {
