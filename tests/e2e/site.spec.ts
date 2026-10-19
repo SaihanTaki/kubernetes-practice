@@ -143,11 +143,14 @@ test("quiz gives feedback and can be retried", async ({ page }) => {
   const quiz = page.getByRole("region", { name: "Quiz" });
   await quiz.getByRole("button", { name: "A ReplicaSet owned by the Deployment" }).click();
   await expect(quiz.getByText("Correct.")).toBeVisible();
+  await expect(quiz.getByText("Question 1 of 22")).toBeVisible();
+  await quiz.getByRole("button", { name: "Next question" }).click();
   await quiz.getByRole("button", { name: "The Deployment drops to 2 replicas" }).click();
   await expect(quiz.getByText("Not quite.")).toBeVisible();
   await expect(quiz.getByText(/Desired state is still 3/)).toBeVisible();
   await quiz.getByRole("button", { name: "Retry quiz" }).click();
-  await expect(quiz.getByText("0 of 22 answered.")).toBeVisible();
+  await expect(quiz.getByText("0 answered, 0 correct")).toBeVisible();
+  await expect(quiz.getByText("Question 1 of 22")).toBeVisible();
 });
 
 test("cheatsheet searches and copies", async ({ page, context }) => {
