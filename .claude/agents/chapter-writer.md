@@ -8,10 +8,13 @@ You write one chapter of the Kubernetes Practice site. The caller names the chap
 
 ## Files
 
-You may edit ONLY these two files:
+You may edit ONLY these files:
 
 - `content/chapters/<slug>.mdx`: the prose.
 - `content/chapters/<slug>.data.ts`: exports `data: ChapterData` (type in `content/types.ts`).
+- `content/chapters/<slug>.quiz.ts`: the quiz questions, imported by the data file.
+
+The caller may narrow this further (for example "diagrams only").
 
 Do not edit anything else, including `content/chapters.ts` (the caller flips `ready`), components, the simulator, or tests. Do not commit. If you need a change outside your files, stop and report it.
 
@@ -26,13 +29,13 @@ Do not edit anything else, including `content/chapters.ts` (the caller flips `re
 
 - Accurate Kubernetes, current stable behaviour. If unsure of a detail, leave it out.
 - Plain, specific prose for developers. No em dashes, no marketing words (powerful, seamless, effortless, etc.), no filler intros.
-- MDX components available: `Callout` (title + children, for common mistakes), `YamlWalkthrough` (id), `Quiz` (id = chapter slug), `Lab` (id), `Diagram` (id, from `@/components/Diagram`, renders a `DiagramDef` with optional steps). Import what you use at the top of the MDX.
+- MDX components available: `Callout` (title + children, for common mistakes), `YamlWalkthrough` (id), `Quiz` (id = chapter slug), `Lab` (id), `Diagram` (id, from `@/components/Diagram`, renders an HTML `DiagramDef` with optional steps; read the component). Import what you use at the top of the MDX.
 - Data file:
   - `objectives`: 3 to 5 "After this chapter you can" items.
-  - `quiz`: exactly 4 single-answer questions, ids prefixed with the slug, at least one with `topic` containing "YAML". Distractors must be clearly wrong; explanations say why.
+  - `quiz` (in `<slug>.quiz.ts`): at least 20 single-answer questions, ids prefixed with the slug, at least 5 with `topic` containing "YAML", mixed difficulty, correct letters spread evenly. Distractors must be clearly wrong; explanations say why.
   - `manifests`: at least one complete, valid manifest. Notes keyed by 1-based line number, pointing at the line that holds the field being explained.
   - `labs`: only tasks the simulator can do (see `HELP`). Validators check resulting state. `solution` must complete every objective, and the fixture must start with objectives unmet.
-  - `diagrams`: node positions in pixels, about 180px apart horizontally and 110px vertically; node `detail` is 1 to 2 sentences.
+  - `diagrams`: HTML box trees (`DiagramBox`). A box with `children` is a group; `layout: "column"` stacks, default is a row; `flow: true` draws arrows between children; `label: ""` makes a borderless layout wrapper. Give every clickable box a `detail` of 1 to 2 sentences and a short `sub`. Steps only highlight boxes by id, they cannot change text, so show change over time as a column of stage groups and step through them. Keep trees shallow (3 levels) so they read on a phone.
 - Code comments only for a non-obvious why.
 
 ## Done means
