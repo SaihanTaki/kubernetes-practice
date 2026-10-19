@@ -45,6 +45,10 @@ This is a simplified view. The value in the `STATUS` column of `kubectl get pods
 - `CrashLoopBackOff`: a container keeps exiting. The kubelet restarts it but waits longer after each crash, up to five minutes.
 - `ImagePullBackOff`: the kubelet cannot pull the image, for example a typo in the tag or a private registry without credentials.
 
+The diagram groups these statuses by Pod phase. `ImagePullBackOff` and `CrashLoopBackOff` are waiting reasons shown inside a phase, not phases of their own. Step through it to follow a normal start and then a crash loop.
+
+<Diagram id="pod-lifecycle" />
+
 ### restartPolicy
 
 `spec.restartPolicy` tells the kubelet what to do when a container exits. It applies to every container in the Pod:
@@ -52,6 +56,10 @@ This is a simplified view. The value in the `STATUS` column of `kubectl get pods
 - `Always` (the default): restart the container whatever its exit code. Used for long-running servers.
 - `OnFailure`: restart only after a non-zero exit code.
 - `Never`: do not restart. The Pod ends as `Succeeded` or `Failed`.
+
+Here is the outcome for each policy when a container exits cleanly (code 0) or crashes (non-zero code):
+
+<Diagram id="restart-policy" />
 
 The restart happens on the same node, in the same Pod. The `RESTARTS` column counts these restarts.
 
@@ -90,6 +98,10 @@ This is a complete Pod you could apply to a real cluster. Numbered lines are exp
 <YamlWalkthrough id="pod" />
 
 Requests and limits are strings with units: `100m` is a tenth of a CPU core, and `128Mi` is 128 mebibytes. The scheduler places Pods using requests. Limits are enforced while the container runs: going over the CPU limit slows the container down, and going over the memory limit gets it killed.
+
+The diagram follows the resources of this manifest: requests matter when the Pod is placed, limits matter while it runs.
+
+<Diagram id="requests-limits" />
 
 The `spec` of this Pod is the same block you will later find under `template.spec` in ReplicaSet and Deployment manifests.
 

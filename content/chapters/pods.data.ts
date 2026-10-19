@@ -189,5 +189,272 @@ spec:
         },
       ],
     },
+    {
+      id: "pod-lifecycle",
+      root: {
+        id: "layout",
+        label: "",
+        layout: "column",
+        flow: true,
+        children: [
+          {
+            id: "pending",
+            label: "Phase: Pending",
+            sub: "accepted, containers not running yet",
+            detail: "The API server has stored the Pod, but not all of its containers have started. This covers waiting for a node and pulling images.",
+            children: [
+              {
+                id: "unscheduled",
+                label: "Waiting for a node",
+                sub: "STATUS: Pending",
+                detail: "The scheduler has not placed the Pod yet. If no node has enough free requested CPU and memory, the Pod stays here.",
+              },
+              {
+                id: "creating",
+                label: "ContainerCreating",
+                sub: "node assigned, pulling images",
+                detail: "The Pod is bound to a node. The kubelet there pulls the images and creates the containers.",
+              },
+              {
+                id: "image-pull",
+                label: "ImagePullBackOff",
+                sub: "image cannot be pulled",
+                detail: "A waiting reason, not a phase. The pull failed, for example a wrong tag or missing registry credentials, and the kubelet retries with growing delays.",
+              },
+            ],
+          },
+          {
+            id: "running",
+            label: "Phase: Running",
+            sub: "bound to a node, a container is running or restarting",
+            detail: "At least one container is running, or is starting or restarting. A Pod in CrashLoopBackOff is still in this phase.",
+            children: [
+              {
+                id: "up",
+                label: "Containers running",
+                sub: "STATUS: Running",
+                detail: "The normal state for a server. The RESTARTS column stays at 0 while nothing crashes.",
+              },
+              {
+                id: "crash-loop",
+                label: "CrashLoopBackOff",
+                sub: "container keeps exiting",
+                detail: "A waiting reason, not a phase. The container exited and is restarted after a delay that doubles each time, up to five minutes. RESTARTS keeps climbing.",
+              },
+            ],
+          },
+          {
+            id: "ended",
+            label: "Ended",
+            sub: "all containers exited and will not restart",
+            detail: "Only reached when restartPolicy allows containers to stay stopped (OnFailure or Never). With Always the Pod stays Running.",
+            children: [
+              {
+                id: "succeeded",
+                label: "Phase: Succeeded",
+                sub: "STATUS: Completed",
+                detail: "Every container exited with code 0. Typical for one-off tasks.",
+              },
+              {
+                id: "failed",
+                label: "Phase: Failed",
+                sub: "STATUS: Error",
+                detail: "All containers have exited and at least one exited with a non-zero code or was killed by the system.",
+              },
+            ],
+          },
+        ],
+      },
+      steps: [
+        {
+          title: "Created, waiting for a node",
+          text: "You create the Pod. Until the scheduler binds it to a node, it is Pending.",
+          highlight: ["pending", "unscheduled"],
+        },
+        {
+          title: "ContainerCreating",
+          text: "The Pod has a node. The kubelet pulls the image and creates the containers. The phase is still Pending.",
+          highlight: ["pending", "creating"],
+        },
+        {
+          title: "Image pull fails",
+          text: "If the image cannot be pulled, the container waits with reason ImagePullBackOff and the Pod stays Pending until the pull succeeds.",
+          highlight: ["pending", "image-pull"],
+        },
+        {
+          title: "Running",
+          text: "The containers start and the Pod moves to Running. This is where a healthy server stays.",
+          highlight: ["running", "up"],
+        },
+        {
+          title: "Crash loop",
+          text: "The container exits and the kubelet restarts it. If it keeps exiting, each restart waits longer and STATUS shows CrashLoopBackOff, while the phase stays Running.",
+          highlight: ["running", "crash-loop"],
+        },
+        {
+          title: "Ended",
+          text: "With restartPolicy OnFailure or Never, the Pod can finish: Succeeded if every container exited with 0, Failed otherwise.",
+          highlight: ["ended", "succeeded", "failed"],
+        },
+      ],
+    },
+    {
+      id: "restart-policy",
+      root: {
+        id: "layout",
+        label: "",
+        children: [
+          {
+            id: "always",
+            label: "Always",
+            sub: "the default",
+            detail: "For long-running servers. The container is restarted after every exit, so the Pod never reaches Succeeded or Failed on its own.",
+            layout: "column",
+            children: [
+              {
+                id: "always-zero",
+                label: "Exit code 0",
+                sub: "restarted",
+                detail: "Even a clean exit is treated as something to undo: the kubelet starts the container again.",
+              },
+              {
+                id: "always-nonzero",
+                label: "Exit code non-zero",
+                sub: "restarted, with back-off",
+                detail: "The container is restarted. Repeated crashes lead to CrashLoopBackOff.",
+              },
+            ],
+          },
+          {
+            id: "on-failure",
+            label: "OnFailure",
+            sub: "retry until it succeeds",
+            detail: "For tasks that should run to completion but may fail and be retried.",
+            layout: "column",
+            children: [
+              {
+                id: "on-failure-zero",
+                label: "Exit code 0",
+                sub: "not restarted",
+                detail: "The container is done. When every container has exited with 0, the Pod is Succeeded.",
+              },
+              {
+                id: "on-failure-nonzero",
+                label: "Exit code non-zero",
+                sub: "restarted, with back-off",
+                detail: "The kubelet restarts the container in the same Pod, waiting longer after each failure.",
+              },
+            ],
+          },
+          {
+            id: "never",
+            label: "Never",
+            sub: "run once",
+            detail: "The kubelet never restarts a container. The Pod ends as Succeeded or Failed.",
+            layout: "column",
+            children: [
+              {
+                id: "never-zero",
+                label: "Exit code 0",
+                sub: "not restarted",
+                detail: "The container stays stopped. If every container exited with 0, the Pod is Succeeded.",
+              },
+              {
+                id: "never-nonzero",
+                label: "Exit code non-zero",
+                sub: "not restarted, Pod Failed",
+                detail: "The container stays stopped and the Pod ends as Failed once all containers have exited.",
+              },
+            ],
+          },
+        ],
+      },
+      steps: [
+        {
+          title: "Clean exit (code 0)",
+          text: "Only Always restarts a container that finished successfully. OnFailure and Never leave it stopped.",
+          highlight: ["always-zero", "on-failure-zero", "never-zero"],
+        },
+        {
+          title: "Crash (non-zero code)",
+          text: "Always and OnFailure restart the container with a growing delay. Never leaves it stopped and the Pod ends as Failed.",
+          highlight: ["always-nonzero", "on-failure-nonzero", "never-nonzero"],
+        },
+      ],
+    },
+    {
+      id: "requests-limits",
+      root: {
+        id: "layout",
+        label: "",
+        layout: "column",
+        flow: true,
+        children: [
+          {
+            id: "spec",
+            label: "Container resources",
+            sub: "from the Pod manifest",
+            detail: "Each container declares requests and limits for CPU and memory.",
+            children: [
+              {
+                id: "requests",
+                label: "requests",
+                sub: "cpu 100m, memory 128Mi",
+                detail: "The amount reserved for the container. Only used when placing the Pod.",
+              },
+              {
+                id: "limits",
+                label: "limits",
+                sub: "cpu 500m, memory 256Mi",
+                detail: "The most the container may use. Enforced on the node while it runs.",
+              },
+            ],
+          },
+          {
+            id: "scheduler",
+            label: "kube-scheduler",
+            sub: "places the Pod using requests",
+            detail: "Picks a node whose allocatable CPU and memory minus the requests of Pods already there can fit this Pod's requests. Actual usage is not considered. If no node fits, the Pod stays Pending.",
+          },
+          {
+            id: "node",
+            label: "Node: kubelet and container runtime",
+            sub: "enforce limits at runtime",
+            detail: "The node configures the container's cgroup with the limits, and the kernel enforces them.",
+            children: [
+              {
+                id: "cpu-over",
+                label: "CPU over limit",
+                sub: "throttled, keeps running",
+                detail: "The container gets no more CPU time than the limit allows, so it runs slower but is not killed.",
+              },
+              {
+                id: "memory-over",
+                label: "Memory over limit",
+                sub: "OOMKilled",
+                detail: "The kernel kills the process. The container shows reason OOMKilled and is restarted according to restartPolicy.",
+              },
+            ],
+          },
+        ],
+      },
+      steps: [
+        {
+          title: "Scheduling uses requests",
+          text: "The scheduler only looks at requests and picks a node with enough unreserved capacity. Limits play no part here.",
+          highlight: ["requests", "scheduler"],
+        },
+        {
+          title: "Running enforces limits",
+          text: "On the node, the limits become hard caps for the running container.",
+          highlight: ["limits", "node"],
+        },
+        {
+          title: "Going over",
+          text: "Too much CPU is throttled. Too much memory gets the container killed with OOMKilled.",
+          highlight: ["cpu-over", "memory-over"],
+        },
+      ],
+    },
   ],
 };
