@@ -1,1 +1,112 @@
-{/* Written by the chapter-writer agent. */}
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## Two kinds of machines
+
+A Kubernetes cluster is a set of machines split into two roles:
+
+- The **control plane** stores what you asked for and decides what should happen.
+- **Worker nodes** run your containers.
+
+You talk only to the control plane. You never log in to a worker node to start a container; you describe what you want, and the cluster makes it happen.
+
+## The control plane
+
+- **kube-apiserver** is the only entry point. kubectl, the other control plane components, and every node talk to it over HTTPS. It authenticates each request, validates the object, and saves it.
+- **etcd** is a key-value store holding all cluster state. Only the API server reads from and writes to it.
+- **kube-scheduler** watches for Pods that have no node yet and picks one for each, based on resource requests and constraints.
+- **kube-controller-manager** runs the built-in controllers: the Deployment controller, the ReplicaSet controller, the Node controller, and others. Each one watches a kind of object and acts on it.
+- **cloud-controller-manager** is optional. On a cloud provider it runs the controllers that call that provider's API, for example to create a load balancer.
+
+In production the control plane usually runs on several machines for availability. With a managed service such as GKE, EKS, or AKS, the provider runs it and you only see the API server.
+
+## Worker nodes
+
+Each worker node runs three pieces:
+
+- **kubelet**, the node agent. It watches the API server for Pods assigned to its node, starts their containers, and reports their status back.
+- **container runtime**, such as containerd or CRI-O. It pulls images and runs containers. The kubelet talks to it through the Container Runtime Interface (CRI).
+- **kube-proxy**, which programs the node's network rules so traffic sent to a Service reaches one of its Pods.
+
+## Desired state and reconciliation
+
+Kubernetes is declarative. You do not issue "start three containers". You store an object that says "three replicas of this Pod should exist", and the cluster works toward it.
+
+Every object has two halves:
+
+- **Desired state**, in `spec`: what you asked for.
+- **Observed state**, in `status`: what Kubernetes currently sees.
+
+A **controller** is a loop that watches objects, compares desired with observed, and takes one step to close the gap. Then it looks again. This is called **reconciliation**. If a node dies and a Pod goes with it, nobody re-runs your command: the ReplicaSet controller counts fewer Pods than `spec.replicas` and creates a replacement.
+
+Components do not call each other directly. The controller manager does not tell the scheduler to place a Pod. It writes a Pod to the API server, and the scheduler, which is watching, notices it. Everything coordinates through objects stored in etcd.
+
+## What happens when you create a Deployment
+
+The diagram shows the whole cluster. Select any box for details, or start the walkthrough to follow a `kubectl apply` of a 3-replica Deployment from your terminal to running containers.
+
+<Diagram id="architecture" />
+
+In short:
+
+1. kubectl sends the Deployment to the API server.
+2. The API server validates it and stores it in etcd.
+3. The Deployment controller creates a ReplicaSet.
+4. The ReplicaSet controller creates 3 Pods with no node assigned.
+5. The scheduler assigns each Pod to a node.
+6. The kubelet on each chosen node sees its Pod.
+7. The kubelet asks the container runtime to start the containers.
+8. Kubelets report status, and `kubectl get deployments` shows `3/3`.
+
+<Callout title="Common mistake: treating a successful apply as a running app">
+  `kubectl apply` returns once the object is stored in etcd, before any Pod is scheduled or any image is pulled. A
+  bad image tag or a cluster with no free capacity still shows `deployment.apps/web created`. Check
+  `kubectl get pods` to see whether the Pods actually start.
+</Callout>
+
+## The structure of a manifest
+
+Every Kubernetes object you write in YAML has the same top-level shape:
+
+- `apiVersion`: the API group and version that defines the kind, such as `v1` or `apps/v1`.
+- `kind`: the type of object, such as `Pod` or `Deployment`.
+- `metadata`: identity. `name`, `namespace`, and `labels` work the same way for every kind.
+- `spec`: the desired state. Its fields depend on the kind.
+
+Here is a minimal Pod. It is the smallest complete manifest you can apply.
+
+<YamlWalkthrough id="pod-basic" />
+
+### status: written by the cluster
+
+You never write `status`. After the Pod is created, the kubelet and control plane fill it in. `kubectl get pod hello -o yaml` shows it below `spec`, trimmed here:
+
+```yaml
+status:
+  phase: Running
+  podIP: 10.244.1.7
+  hostIP: 192.168.49.3
+  containerStatuses:
+    - name: web
+      ready: true
+      restartCount: 0
+```
+
+If you include a `status` section in a manifest you apply, the API server ignores it. Status is only changed by the components that observe it.
+
+<Callout title="Common mistake: mismatched apiVersion and kind">
+  Each kind lives in a specific API group. `apiVersion: v1` with `kind: Deployment` is rejected because Deployments
+  are in `apps/v1`. Check with `kubectl api-resources` when unsure.
+</Callout>
+
+## Try it
+
+There is no lab for this chapter. To see the nodes of the simulated cluster, open the [playground](/playground) and run `kubectl get nodes`.
+
+## Check yourself
+
+<Quiz id="architecture" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).

@@ -20,7 +20,7 @@ export const chapters: Chapter[] = [
     title: "Kubernetes Architecture",
     summary: "The control plane, worker nodes, and what happens when you ask for a workload.",
     difficulty: "beginner",
-    ready: false,
+    ready: true,
     data: architecture,
   },
   {
