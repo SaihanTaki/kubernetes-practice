@@ -169,3 +169,15 @@ describe("bad input", () => {
     expect(c).toEqual(before);
   });
 });
+
+describe("pod phase", () => {
+  it("reports Running for a crash-looping Pod and Pending while creating", () => {
+    const c = createCluster({ pods: [{ name: "bad", image: "busybox", status: "CrashLoopBackOff", restarts: 6 }] });
+    const out = exec(c, "kubectl describe pod bad").output;
+    expect(out).toMatch(/Status:\s+Running/);
+    expect(out).toMatch(/Waiting \(reason: CrashLoopBackOff\)/);
+    const scaled = exec(web(), "kubectl scale deploy web --replicas=3").c;
+    const pending = list(scaled, "Pod").find((p) => p.status === "ContainerCreating")!;
+    expect(exec(scaled, `kubectl describe pod ${pending.metadata.name}`).output).toMatch(/Status:\s+Pending/);
+  });
+});

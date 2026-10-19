@@ -153,6 +153,9 @@ function requireNamespace(c: Cluster, ns: string) {
   if (!c.namespaces.includes(ns)) fail(`Error from server (NotFound): namespaces "${ns}" not found`);
 }
 
+// A crash-looping Pod was started at least once, so Kubernetes keeps its phase at Running.
+const phase = (p: Pod) => (p.status === "Running" || p.status === "CrashLoopBackOff" ? "Running" : "Pending");
+
 function deploymentStatus(c: Cluster, d: Deployment) {
   const pods = replicaSetsOf(c, d).flatMap((rs) => podsOf(c, rs));
   return { total: pods.length, ready: pods.filter(isReady).length };
@@ -174,7 +177,7 @@ function manifest(c: Cluster, r: Pod | ReplicaSet | Deployment) {
       kind: "Pod",
       metadata,
       spec: { nodeName: r.node, containers: containers(r.image) },
-      status: { phase: r.status === "Running" ? "Running" : "Pending", reason: r.status === "Running" ? undefined : r.status, restartCount: r.restarts },
+      status: { phase: phase(r), reason: r.status === "Running" ? undefined : r.status, restartCount: r.restarts },
     };
   }
   const spec = {
@@ -270,7 +273,7 @@ function describe(c: Cluster, p: Parsed): string {
       ["Namespace", r.metadata.namespace],
       ["Node", r.node],
       ["Labels", labelText(r.metadata.labels)],
-      ["Status", r.status === "Running" ? "Running" : "Pending"],
+      ["Status", phase(r)],
       ["Controlled By", r.owner ? `ReplicaSet/${r.owner}` : "<none>"],
       ["Image", r.image],
       ["State", r.status === "Running" ? "Running" : `Waiting (reason: ${r.status})`],
