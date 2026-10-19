@@ -1,1 +1,106 @@
-{/* Written by the chapter-writer agent. */}
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## What a Pod is
+
+A Pod is the smallest thing Kubernetes runs. You never schedule a single container on its own: you schedule a Pod, and the Pod holds one or more containers that share:
+
+- **Network**: one IP address and one network namespace. Containers in the same Pod reach each other on `localhost`, and two of them cannot listen on the same port.
+- **Storage**: volumes declared in the Pod can be mounted by any of its containers.
+- **Lifecycle**: the containers are scheduled to the same node, start together, and are removed together.
+
+<Diagram id="pod-anatomy" />
+
+## One main container per Pod
+
+Most Pods run a single container. Put two containers in one Pod only when they must run on the same machine and share files or `localhost`, for example an app plus a log shipper that reads its log directory. This helper is often called a sidecar.
+
+Do not put an app and its database in one Pod. They would be scaled together, restarted together, and could never run on different nodes. Give each its own Pod.
+
+## Pods are disposable
+
+A Pod is bound to one node for its whole life. Kubernetes does not move it, and a Pod you create directly does not come back once it is gone:
+
+- If you delete a standalone Pod, it is deleted for good.
+- If its node fails, the Pod is not rescheduled elsewhere.
+
+The kubelet can restart a crashed **container** inside a Pod that still exists, but nothing recreates the **Pod** itself. That is the job of controllers. A [ReplicaSet](/chapters/replicasets) creates a new Pod, with a new name, whenever one of its Pods disappears, and a [Deployment](/chapters/deployments) manages ReplicaSets for you. In practice you create Deployments and let them create Pods.
+
+<Callout title="Common mistake: relying on a standalone Pod">
+  A Pod created with `kind: Pod` is fine for a quick test, but it is not self-healing. If the node goes away or someone
+  deletes it, your app is down until a person recreates it. Use a Deployment for anything that must stay up.
+</Callout>
+
+## The Pod lifecycle
+
+This is a simplified view. The value in the `STATUS` column of `kubectl get pods` is what you will see most often:
+
+- `Pending`: the Pod is accepted but its containers are not all running yet. It may still be waiting for a node.
+- `ContainerCreating`: shown while Pending. The Pod has a node and the kubelet is pulling images and creating containers.
+- `Running`: the Pod is on a node and at least one container is running.
+- `Completed` or `Error`: every container has exited. The Pod's phase is then `Succeeded` or `Failed`. Typical for one-off tasks.
+- `CrashLoopBackOff`: a container keeps exiting. The kubelet restarts it but waits longer after each crash, up to five minutes.
+- `ImagePullBackOff`: the kubelet cannot pull the image, for example a typo in the tag or a private registry without credentials.
+
+### restartPolicy
+
+`spec.restartPolicy` tells the kubelet what to do when a container exits. It applies to every container in the Pod:
+
+- `Always` (the default): restart the container whatever its exit code. Used for long-running servers.
+- `OnFailure`: restart only after a non-zero exit code.
+- `Never`: do not restart. The Pod ends as `Succeeded` or `Failed`.
+
+The restart happens on the same node, in the same Pod. The `RESTARTS` column counts these restarts.
+
+<Callout title="Common mistake: expecting a restart to fix a crash">
+  `CrashLoopBackOff` means restarting has already been tried and did not help. The cause is in the container: a bad
+  command, missing configuration, or an app that exits right away. Read the waiting reason and the logs instead of
+  waiting for it to recover.
+</Callout>
+
+## Inspecting Pods
+
+List Pods and read the `STATUS` and `RESTARTS` columns:
+
+```bash
+kubectl get pods
+```
+
+```text
+NAME         READY   STATUS             RESTARTS   AGE
+api          1/1     Running            0          12m
+broken-pod   0/1     CrashLoopBackOff   6          12m
+```
+
+Then look at one Pod in detail:
+
+```bash
+kubectl describe pod broken-pod
+```
+
+`describe` shows the node the Pod runs on, its image, the container state with the waiting reason, the restart count, and whether a controller owns it (`Controlled By`). On a real cluster it also lists recent events, which usually explain why a container is not starting.
+
+## The Pod manifest
+
+This is a complete Pod you could apply to a real cluster. Numbered lines are explained alongside.
+
+<YamlWalkthrough id="pod" />
+
+Requests and limits are strings with units: `100m` is a tenth of a CPU core, and `128Mi` is 128 mebibytes. The scheduler places Pods using requests. Limits are enforced while the container runs: going over the CPU limit slows the container down, and going over the memory limit gets it killed.
+
+The `spec` of this Pod is the same block you will later find under `template.spec` in ReplicaSet and Deployment manifests.
+
+## Practice
+
+Find the failing Pod in the simulated terminal and remove it. These Pods have no controller, so whatever you delete stays deleted.
+
+<Lab id="pods-broken" />
+
+## Check yourself
+
+<Quiz id="pods" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).

@@ -28,7 +28,7 @@ export const chapters: Chapter[] = [
     title: "Pods",
     summary: "The smallest unit Kubernetes runs: containers that share a network and lifecycle.",
     difficulty: "beginner",
-    ready: false,
+    ready: true,
     data: pods,
   },
   {
