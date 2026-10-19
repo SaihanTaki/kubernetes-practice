@@ -19,17 +19,77 @@ async function command(page: Page, text: string) {
   await input.press("Enter");
 }
 
-test("home links to the chapter, playground, and cheatsheet", async ({ page }) => {
+test("home links every chapter, playground, and cheatsheet", async ({ page }) => {
   await page.goto("/");
   await noHorizontalOverflow(page);
-  await expect(page.getByText("Pods (coming soon)")).toBeVisible();
+  await expect(page.getByText("(coming soon)")).toHaveCount(0);
+  for (const name of ["Kubernetes Architecture", "Pods", "ReplicaSets", "Deployments"]) {
+    await expect(page.getByRole("main").getByRole("link", { name, exact: true })).toBeVisible();
+  }
   await page.getByRole("link", { name: "Deployments" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Deployments" })).toBeVisible();
-  await noHorizontalOverflow(page);
   for (const name of ["Playground", "Cheatsheet"]) {
     await page.getByRole("navigation").getByRole("link", { name }).click();
     await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
   }
+});
+
+for (const [slug, title] of [
+  ["architecture", "Kubernetes Architecture"],
+  ["pods", "Pods"],
+  ["replicasets", "ReplicaSets"],
+  ["deployments", "Deployments"],
+]) {
+  test(`chapter ${slug} renders`, async ({ page }) => {
+    await page.goto(`/chapters/${slug}`);
+    await expect(page.getByRole("heading", { level: 1, name: title })).toBeVisible();
+    await noHorizontalOverflow(page);
+  });
+}
+
+test("architecture diagram walkthrough and details", async ({ page }) => {
+  await page.goto("/chapters/architecture");
+  await page.getByRole("button", { name: "Start walkthrough" }).click();
+  await expect(page.getByText("Step 1 of 8")).toBeVisible();
+  const prev = page.getByRole("button", { name: "Previous" });
+  const next = page.getByRole("button", { name: "Next" });
+  await expect(prev).toBeDisabled();
+  await next.click();
+  await expect(page.getByText("Step 2 of 8")).toBeVisible();
+  await expect(prev).toBeEnabled();
+  for (let i = 2; i < 8; i++) await next.click();
+  await expect(page.getByText("Step 8 of 8")).toBeVisible();
+  await expect(next).toBeDisabled();
+  await page.getByRole("button", { name: "Show all" }).click();
+  await expect(page.getByRole("button", { name: "Start walkthrough" })).toBeVisible();
+
+  await page.locator(".react-flow__node", { hasText: /^etcd$/ }).click();
+  await expect(page.getByText(/consistent key-value store/)).toBeVisible();
+});
+
+test("pods lab completes only when the broken Pod is deleted", async ({ page }) => {
+  await page.goto("/chapters/pods");
+  const lab = page.getByRole("region", { name: /Lab:/ });
+  await command(page, "kubectl delete pod api");
+  await expect(lab.getByRole("log")).toContainText('pod "api" deleted');
+  await expect(lab.getByText("○ The api Pod still exists.")).toBeVisible();
+  await expect(lab.getByText("Lab complete.")).toHaveCount(0);
+
+  await lab.getByRole("button", { name: "Reset lab" }).click();
+  for (const c of ["kubectl get pods", "kubectl describe pod broken-pod", "kubectl delete pod broken-pod"]) await command(page, c);
+  for (const o of ["The failing Pod broken-pod is deleted.", "The api Pod still exists.", "The worker Pod still exists."]) {
+    await expect(lab.getByText(`✓ ${o}`)).toBeVisible();
+  }
+  await expect(lab.getByText("Lab complete.")).toBeVisible();
+});
+
+test("replicasets lab completes", async ({ page }) => {
+  await page.goto("/chapters/replicasets");
+  const lab = page.getByRole("region", { name: /Lab:/ });
+  await command(page, "kubectl scale replicaset frontend --replicas=5");
+  await command(page, "kubectl get pods");
+  await expect(lab.getByText("✓ 5 Pods owned by frontend are ready.")).toBeVisible();
+  await expect(lab.getByText("Lab complete.")).toBeVisible();
 });
 
 test("lab completes through the terminal and resets", async ({ page }) => {
