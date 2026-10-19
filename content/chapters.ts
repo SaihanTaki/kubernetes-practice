@@ -36,7 +36,7 @@ export const chapters: Chapter[] = [
     title: "ReplicaSets",
     summary: "How Kubernetes keeps a fixed number of matching Pods running.",
     difficulty: "beginner",
-    ready: false,
+    ready: true,
     data: replicasets,
   },
   {

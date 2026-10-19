@@ -1,1 +1,108 @@
-{/* Written by the chapter-writer agent. */}
+import { Callout } from "@/components/Callout";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## What a ReplicaSet does
+
+A ReplicaSet keeps a fixed number of identical Pods running. You give it three things: how many Pods you want, how to recognise its Pods, and a template for creating new ones. Its controller then compares the count it wants with the count it finds and closes the gap:
+
+- Too few matching Pods: it creates new ones from the template.
+- Too many: it deletes the extras.
+- The right number: it does nothing.
+
+This loop runs continuously, not once. A Pod that crashes beyond recovery, gets deleted, or disappears with its node is noticed and replaced.
+
+```text
+ReplicaSet frontend      replicas: 3, selector app=frontend
+├── Pod frontend-x8k2p   app=frontend
+├── Pod frontend-q4mzn   app=frontend
+└── Pod frontend-v9tlw   app=frontend
+```
+
+Pods created by a ReplicaSet are named after it, plus a random five-character suffix.
+
+## Labels and selectors
+
+A ReplicaSet does not keep a list of Pod names. It finds its Pods by **label**. Labels are key-value pairs in a Pod's `metadata.labels`, and the ReplicaSet's `spec.selector` says which labels to look for. Every Pod in the namespace whose labels match the selector counts toward the replica count.
+
+You can run the same query yourself:
+
+```bash
+kubectl get pods -l app=frontend
+```
+
+Each Pod a ReplicaSet manages also gets an `ownerReferences` entry pointing back at the ReplicaSet. That is how Kubernetes knows which controller is responsible for a Pod and what to clean up when the ReplicaSet is deleted.
+
+Two consequences follow from matching by label:
+
+- **A standalone Pod with matching labels can be adopted.** If you create a bare Pod labelled `app: frontend` and it has no other owner, the ReplicaSet takes ownership of it and counts it. With `replicas: 3` and three Pods already running, the ReplicaSet now sees four and deletes one to get back to three. The one it deletes may be any of them.
+- **Removing the label releases a Pod.** If you change a managed Pod's labels so they no longer match, the ReplicaSet stops counting it and creates a replacement. The old Pod keeps running on its own, which is occasionally useful for debugging a misbehaving Pod outside the pool.
+
+<Callout title="Common mistake: reusing labels across workloads">
+  Give each ReplicaSet a selector that only its own Pods carry. If two workloads share a label like `app: web`, one
+  can adopt or delete Pods you meant for the other.
+</Callout>
+
+## Scaling
+
+Change the desired count with `kubectl scale`:
+
+```bash
+kubectl scale replicaset frontend --replicas=5
+```
+
+This updates `spec.replicas`. The controller sees five wanted and two existing, and creates three Pods. They start as `ContainerCreating` and become `Running` once their containers start. `kubectl get replicasets` shows the progress:
+
+```text
+NAME       DESIRED   CURRENT   READY   AGE
+frontend   5         5         2       10m
+```
+
+`DESIRED` is what you asked for, `CURRENT` is how many Pods exist, and `READY` is how many are ready to serve. Scaling down works the same way in reverse: the controller deletes Pods until the count matches, preferring Pods that are not ready yet.
+
+## Deleting a Pod
+
+Delete one of the ReplicaSet's Pods and list Pods again:
+
+```bash
+kubectl delete pod frontend-x8k2p
+kubectl get pods
+```
+
+The deleted Pod is gone, and a new Pod with a different name has taken its place. The ReplicaSet only cares about the count, so a replacement is never the same Pod coming back. A Pod with no owner behaves differently: once deleted, nothing recreates it.
+
+<Callout title="Common mistake: deleting Pods to stop an app">
+  Deleting Pods owned by a ReplicaSet only produces replacements. To stop the app, scale the ReplicaSet to 0 or delete
+  the ReplicaSet itself.
+</Callout>
+
+## Why you rarely create ReplicaSets yourself
+
+A ReplicaSet has no idea how to update its Pods. If you change the image in its template, existing Pods keep running the old image. Only Pods created after the change use the new template, so you would have to delete the old ones by hand.
+
+A [Deployment](/chapters/deployments) solves this. It owns ReplicaSets and handles updates by creating a new ReplicaSet for the new template and shifting Pods across gradually, with rollback to the old one if needed. In practice you create Deployments and let them manage ReplicaSets. Knowing how a ReplicaSet works still matters, because it is what actually keeps your Deployment's Pods running.
+
+## The ReplicaSet manifest
+
+This is a complete ReplicaSet you could apply to a real cluster. Numbered lines are explained alongside.
+
+<YamlWalkthrough id="replicaset" />
+
+### Why the template labels must match the selector
+
+The selector decides which Pods the ReplicaSet counts, and the template decides what labels new Pods get. If the template's labels did not satisfy the selector, every Pod the ReplicaSet created would be invisible to it. It would see zero Pods, create another, and never stop. The API server prevents this by rejecting any ReplicaSet whose `spec.template.metadata.labels` do not match `spec.selector`.
+
+The template may carry extra labels beyond those in the selector.
+
+## Practice
+
+Scale a standalone ReplicaSet in the simulated terminal. The diagram below the terminal shows the same cluster, so watch the new Pods appear. Select any box to see its details.
+
+<Lab id="replicasets-scale" />
+
+## Check yourself
+
+<Quiz id="replicasets" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).
