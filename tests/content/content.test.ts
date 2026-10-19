@@ -2,6 +2,7 @@ import { existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { chapters } from "@/content/chapters";
+import { cheatsheet } from "@/content/cheatsheet";
 import { labs } from "@/content/labs";
 import { manifests } from "@/content/manifests";
 import { quizzes } from "@/content/quizzes";
@@ -63,5 +64,28 @@ describe("labs", () => {
       c = r.cluster;
     }
     for (const o of lab.objectives) expect(check(c, o.validator), o.id).toBe(true);
+  });
+});
+
+describe("cheatsheet", () => {
+  it("has unique ids and real chapter links", () => {
+    unique(cheatsheet.map((e) => e.id));
+    for (const e of cheatsheet) if (e.relatedChapter) expect(chapters.map((c) => c.slug)).toContain(e.relatedChapter);
+  });
+
+  it.each(cheatsheet.filter((e) => e.simulated))("$id runs in the simulator", (e) => {
+    let c = createCluster({
+      deployments: [{ name: "web", replicas: 2, image: "nginx:1.27", labels: { app: "web" } }],
+      pods: [{ name: "toolbox", image: "busybox:1.36" }],
+    });
+    for (const cmd of e.code.split("\n")) {
+      const r = run(c, cmd);
+      expect(r.error, `${cmd}: ${r.output}`).toBe(false);
+      c = r.cluster;
+    }
+  });
+
+  it.each(cheatsheet.filter((e) => e.language === "yaml"))("$id is valid Kubernetes YAML", (e) => {
+    expect(manifestSchema.safeParse(parse(e.code)).error?.issues).toBeUndefined();
   });
 });
