@@ -6,7 +6,8 @@ import { useState } from "react";
 import { diagrams } from "@/content/chapters";
 import type { DiagramDef } from "@/content/types";
 
-const DIM = 0.35;
+// Only edge lines fade during a step; dimming text would drop it below WCAG AA contrast.
+const DIM = 0.25;
 
 // The built-in group node renders nothing, so override it to show the label.
 function GroupNode({ data }: NodeProps<Node<{ label: string }>>) {
@@ -55,7 +56,7 @@ function DiagramView({ def }: { def: DiagramDef }) {
       type: "group",
       position: { x: g.x, y: g.y },
       data: { label: g.label },
-      style: { width: g.width, height: g.height, ...dim(false) },
+      style: { width: g.width, height: g.height },
       zIndex: -1,
       selectable: false,
       focusable: false,
@@ -69,7 +70,7 @@ function DiagramView({ def }: { def: DiagramDef }) {
       data: { label: n.label },
       style: {
         width: 170,
-        ...(lit.has(n.id) ? { borderColor: "var(--accent)", borderWidth: 2 } : dim(false)),
+        ...(lit.has(n.id) && { borderColor: "var(--accent)", borderWidth: 2, boxShadow: "0 0 0 3px color-mix(in srgb, var(--accent) 25%, transparent)" }),
       },
       ariaLabel: n.label,
       selected: n.id === selected,
