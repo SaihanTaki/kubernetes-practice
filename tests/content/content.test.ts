@@ -17,7 +17,7 @@ describe("chapters", () => {
   it.each(chapters.filter((c) => c.ready))("$slug has content, objectives, and a YAML question", (c) => {
     expect(existsSync(`content/chapters/${c.slug}.mdx`)).toBe(true);
     expect(c.data.objectives.length).toBeGreaterThan(0);
-    expect(c.data.quiz.length).toBe(4);
+    expect(c.data.quiz.length).toBeGreaterThanOrEqual(20);
     expect(c.data.quiz.some((q) => /yaml/i.test(q.topic))).toBe(true);
     expect(c.data.manifests.length).toBeGreaterThan(0);
   });
