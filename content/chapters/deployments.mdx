@@ -1,4 +1,5 @@
 import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
 import { Lab } from "@/components/Lab";
 import { Quiz } from "@/components/Quiz";
 import { YamlWalkthrough } from "@/components/YamlWalkthrough";
@@ -7,15 +8,9 @@ import { YamlWalkthrough } from "@/components/YamlWalkthrough";
 
 You rarely create Pods by hand. A Pod that crashes or whose node disappears is gone for good. A Deployment lets you say "I want three copies of this Pod running" and Kubernetes keeps that true.
 
-A Deployment does not create Pods itself. It creates a **ReplicaSet**, and the ReplicaSet creates the Pods:
+A Deployment does not create Pods itself. It creates a **ReplicaSet**, and the ReplicaSet creates the Pods. Select a box to see what each layer is responsible for.
 
-```text
-Deployment web          you edit this
-└── ReplicaSet web-7c5ddbdf54     keeps N Pods running
-    ├── Pod web-7c5ddbdf54-x8k2p
-    ├── Pod web-7c5ddbdf54-q4mzn
-    └── Pod web-7c5ddbdf54-v9tlw
-```
+<Diagram id="deploy-ownership" />
 
 The extra layer exists for updates. When you change the Pod template, the Deployment creates a second ReplicaSet for the new version and moves Pods across gradually. The ReplicaSet name ends in a hash of the Pod template, and each Pod name adds a random suffix to that.
 
@@ -62,6 +57,10 @@ When you change the Pod template, for example a new image tag, the Deployment st
 3. The old ReplicaSet stays at 0 replicas so you can roll back to it.
 
 Two fields control the pace. `maxSurge` is how many extra Pods may exist above `replicas`. `maxUnavailable` is how many Pods may be missing below it. The simulator in this chapter does not model rollouts yet, only scaling.
+
+Here is a rollout from image v1 to v2 with `replicas: 3`, `maxSurge: 1`, and `maxUnavailable: 0`. At most 4 Pods exist at once and at least 3 are always ready. Step through it to follow both ReplicaSets.
+
+<Diagram id="rolling-update" />
 
 ## The Deployment manifest
 
