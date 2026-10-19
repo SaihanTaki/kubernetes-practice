@@ -41,7 +41,15 @@ Every object has two halves:
 
 A **controller** is a loop that watches objects, compares desired with observed, and takes one step to close the gap. Then it looks again. This is called **reconciliation**. If a node dies and a Pod goes with it, nobody re-runs your command: the ReplicaSet controller counts fewer Pods than `spec.replicas` and creates a replacement.
 
+The diagram shows the loop on top and that node failure below. Step through it to see which part of the loop handles each moment.
+
+<Diagram id="reconcile-loop" />
+
 Components do not call each other directly. The controller manager does not tell the scheduler to place a Pod. It writes a Pod to the API server, and the scheduler, which is watching, notices it. Everything coordinates through objects stored in etcd.
+
+Seen from the API server, the cluster is a hub: every component is a client that writes objects and watches for changes, and only the API server reaches etcd.
+
+<Diagram id="api-hub" />
 
 ## What happens when you create a Deployment
 
@@ -74,6 +82,10 @@ Every Kubernetes object you write in YAML has the same top-level shape:
 - `kind`: the type of object, such as `Pod` or `Deployment`.
 - `metadata`: identity. `name`, `namespace`, and `labels` work the same way for every kind.
 - `spec`: the desired state. Its fields depend on the kind.
+
+The cluster adds two more parts after the object is stored: server-set `metadata` fields and `status`. The diagram groups the fields by who writes them.
+
+<Diagram id="manifest-anatomy" />
 
 Here is a minimal Pod. It is the smallest complete manifest you can apply.
 
