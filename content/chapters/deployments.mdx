@@ -1,0 +1,90 @@
+import { Callout } from "@/components/Callout";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## What a Deployment does
+
+You rarely create Pods by hand. A Pod that crashes or whose node disappears is gone for good. A Deployment lets you say "I want three copies of this Pod running" and Kubernetes keeps that true.
+
+A Deployment does not create Pods itself. It creates a **ReplicaSet**, and the ReplicaSet creates the Pods:
+
+```text
+Deployment web          you edit this
+└── ReplicaSet web-7c5ddbdf54     keeps N Pods running
+    ├── Pod web-7c5ddbdf54-x8k2p
+    ├── Pod web-7c5ddbdf54-q4mzn
+    └── Pod web-7c5ddbdf54-v9tlw
+```
+
+The extra layer exists for updates. When you change the Pod template, the Deployment creates a second ReplicaSet for the new version and moves Pods across gradually. The ReplicaSet name ends in a hash of the Pod template, and each Pod name adds a random suffix to that.
+
+## Desired state and observed state
+
+Every Deployment carries two numbers you should learn to read apart:
+
+- **Desired**: `spec.replicas`, what you asked for.
+- **Observed**: how many Pods exist and are ready right now.
+
+`kubectl get deployments` shows both in the `READY` column. `2/3` means three are wanted and two are ready. Controllers keep working until the two numbers match. Right after you scale up, expect a short gap while new containers start.
+
+```text
+NAME   READY   UP-TO-DATE   AVAILABLE   AGE
+web    2/3     3            2           10m
+```
+
+## Scaling
+
+Change the desired count with `kubectl scale`:
+
+```bash
+kubectl scale deployment web --replicas=3
+```
+
+The Deployment updates its ReplicaSet, and the ReplicaSet creates or removes Pods to match. When it scales down, it removes Pods that are not ready first.
+
+<Callout title="Common mistake: scaling the ReplicaSet">
+  If you run `kubectl scale replicaset web-7c5ddbdf54 --replicas=5`, the Deployment notices that its ReplicaSet no
+  longer matches `spec.replicas` and sets it back. Always scale the Deployment.
+</Callout>
+
+<Callout title="Common mistake: deleting Pods to stop an app">
+  Deleting a Pod owned by a ReplicaSet only makes the ReplicaSet create a replacement. To stop the app, scale the
+  Deployment to 0 or delete the Deployment, which also removes its ReplicaSets and Pods.
+</Callout>
+
+## Rolling updates
+
+When you change the Pod template, for example a new image tag, the Deployment starts a **rollout**:
+
+1. It creates a new ReplicaSet for the new template.
+2. It scales the new ReplicaSet up and the old one down, a few Pods at a time.
+3. The old ReplicaSet stays at 0 replicas so you can roll back to it.
+
+Two fields control the pace. `maxSurge` is how many extra Pods may exist above `replicas`. `maxUnavailable` is how many Pods may be missing below it. The simulator in this chapter does not model rollouts yet, only scaling.
+
+## The Deployment manifest
+
+This is a complete Deployment you could apply to a real cluster. Numbered lines are explained alongside.
+
+<YamlWalkthrough id="deployment" />
+
+### How it differs from a ReplicaSet manifest
+
+A ReplicaSet manifest has the same `replicas`, `selector`, and `template` fields. A Deployment adds:
+
+- `kind: Deployment` instead of `kind: ReplicaSet`.
+- `strategy`, which controls how Pods are replaced during an update. A ReplicaSet has no concept of an update: changing its template does not touch existing Pods.
+- Rollout history (`revisionHistoryLimit`, default 10), the old ReplicaSets kept for rollback.
+
+## Practice
+
+Scale a Deployment in the simulated terminal. The diagram below the terminal shows the same cluster, so watch the Pods appear as you work. Select any box to see its details.
+
+<Lab id="deployments-scale" />
+
+## Check yourself
+
+<Quiz id="deployments" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).
