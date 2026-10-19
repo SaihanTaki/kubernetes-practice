@@ -1,4 +1,4 @@
-import { manifests } from "@/content/manifests";
+import { manifests } from "@/content/chapters";
 
 export function YamlWalkthrough({ id }: { id: string }) {
   const m = manifests[id];

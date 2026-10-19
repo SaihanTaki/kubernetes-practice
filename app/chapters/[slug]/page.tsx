@@ -3,6 +3,9 @@ import { notFound } from "next/navigation";
 import { chapters } from "@/content/chapters";
 
 const content: Record<string, () => Promise<{ default: React.ComponentType }>> = {
+  architecture: () => import("@/content/chapters/architecture.mdx"),
+  pods: () => import("@/content/chapters/pods.mdx"),
+  replicasets: () => import("@/content/chapters/replicasets.mdx"),
   deployments: () => import("@/content/chapters/deployments.mdx"),
 };
 
@@ -40,7 +43,7 @@ export default async function ChapterPage({ params }: Props) {
           After this chapter you can
         </h2>
         <ul className="mt-2 list-disc space-y-1 pl-6">
-          {chapter.objectives.map((o) => (
+          {chapter.data.objectives.map((o) => (
             <li key={o}>{o}</li>
           ))}
         </ul>

@@ -1,7 +1,8 @@
 "use client";
 
 import { useState } from "react";
-import { quizzes, type QuizQuestion } from "@/content/quizzes";
+import { quizzes } from "@/content/chapters";
+import type { QuizQuestion } from "@/content/types";
 
 export function Quiz({ id }: { id: string }) {
   const questions = quizzes[id];

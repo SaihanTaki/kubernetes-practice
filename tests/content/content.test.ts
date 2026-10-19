@@ -1,11 +1,8 @@
 import { existsSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
-import { chapters } from "@/content/chapters";
+import { chapters, diagrams, labs, manifests, quizzes } from "@/content/chapters";
 import { cheatsheet } from "@/content/cheatsheet";
-import { labs } from "@/content/labs";
-import { manifests } from "@/content/manifests";
-import { quizzes } from "@/content/quizzes";
 import { check } from "@/lib/labs";
 import { manifestSchema } from "@/lib/manifest-schema";
 import { createCluster, run } from "@/lib/simulator";
@@ -17,13 +14,18 @@ describe("chapters", () => {
     expect(chapters.map((c) => c.slug)).toEqual(["architecture", "pods", "replicasets", "deployments"]);
   });
 
-  it.each(chapters.filter((c) => c.ready))("$slug has content and objectives", (c) => {
+  it.each(chapters.filter((c) => c.ready))("$slug has content, objectives, and a YAML question", (c) => {
     expect(existsSync(`content/chapters/${c.slug}.mdx`)).toBe(true);
-    expect(c.objectives.length).toBeGreaterThan(0);
+    expect(c.data.objectives.length).toBeGreaterThan(0);
+    expect(c.data.quiz.length).toBe(4);
+    expect(c.data.quiz.some((q) => /yaml/i.test(q.topic))).toBe(true);
+    expect(c.data.manifests.length).toBeGreaterThan(0);
   });
 });
 
 describe("manifests", () => {
+  it("has unique ids", () => unique(chapters.flatMap((c) => c.data.manifests.map((m) => m.id))));
+
   it.each(Object.values(manifests))("$id is valid Kubernetes YAML with notes on real lines", (m) => {
     const result = manifestSchema.safeParse(parse(m.yaml));
     expect(result.error?.issues).toBeUndefined();
@@ -41,6 +43,17 @@ describe("manifests", () => {
   });
 });
 
+describe("diagrams", () => {
+  it("has unique ids", () => unique(Object.keys(diagrams)));
+
+  it.each(Object.values(diagrams))("$id references only its own nodes", (d) => {
+    const ids = d.nodes.map((n) => n.id);
+    unique(ids);
+    for (const e of d.edges) expect(ids).toEqual(expect.arrayContaining([e.from, e.to]));
+    for (const s of d.steps ?? []) expect(ids).toEqual(expect.arrayContaining(s.nodes));
+  });
+});
+
 describe("quizzes", () => {
   const all = Object.values(quizzes).flat();
   it("has unique question ids", () => unique(all.map((q) => q.id)));
@@ -54,6 +67,10 @@ describe("quizzes", () => {
 
 describe("labs", () => {
   it("has unique ids", () => unique(labs.map((l) => l.id)));
+
+  it.each(labs)("$id fixture is valid", (lab) => {
+    expect(() => createCluster(lab.fixture)).not.toThrow();
+  });
 
   it.each(labs)("$id starts incomplete and its solution completes it", (lab) => {
     let c = createCluster(lab.fixture);

@@ -1,6 +1,6 @@
 "use client";
 
-import { labs } from "@/content/labs";
+import { labs } from "@/content/chapters";
 import { check, type LabDefinition } from "@/lib/labs";
 import { Terminal } from "./Terminal";
 import { useCluster } from "./useCluster";
