@@ -51,3 +51,21 @@ body {
     outline-offset: 2px;
   }
 }
+
+/* Tie React Flow to the site palette so diagrams follow the same light/dark tokens. */
+.react-flow {
+  --xy-background-color: transparent;
+  --xy-node-background-color: var(--surface);
+  --xy-node-color: var(--fg);
+  --xy-node-border: 1px solid var(--border);
+  --xy-node-group-background-color: color-mix(in srgb, var(--code-bg) 60%, transparent);
+  --xy-edge-stroke: var(--muted);
+  --xy-edge-label-background-color: var(--surface);
+  --xy-edge-label-color: var(--fg);
+  --xy-attribution-background-color: transparent;
+  --xy-node-boxshadow-selected: 0 0 0 2px var(--accent);
+}
+
+.react-flow__attribution a {
+  color: var(--muted);
+}
