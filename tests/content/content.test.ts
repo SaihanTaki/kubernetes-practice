@@ -45,7 +45,7 @@ describe("manifests", () => {
 });
 
 describe("diagrams", () => {
-  it("has unique ids", () => unique(Object.keys(diagrams)));
+  it("has unique ids across chapters", () => unique(chapters.flatMap((c) => c.data.diagrams.map((d) => d.id))));
 
   it.each(Object.values(diagrams))("$id has unique box ids and steps that point at them", (d) => {
     const ids: string[] = [];
