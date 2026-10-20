@@ -15,6 +15,7 @@ import { data as jobs } from "./chapters/jobs.data";
 import { data as ingress } from "./chapters/ingress.data";
 import { data as networkPolicies } from "./chapters/network-policies.data";
 import { data as resources } from "./chapters/resources.data";
+import { data as volumes } from "./chapters/volumes.data";
 import type { ChapterData, Difficulty } from "./types";
 
 export type Chapter = {
@@ -182,6 +183,15 @@ export const chapters: Chapter[] = [
     difficulty: "intermediate",
     ready: true,
     data: resources,
+  },
+  {
+    slug: "volumes",
+    section: "Storage & Scheduling",
+    title: "Volumes and Persistent Storage",
+    summary: "Keep data beyond a container's life with volumes, PersistentVolumeClaims, and StorageClasses.",
+    difficulty: "intermediate",
+    ready: true,
+    data: volumes,
   },
 ];
 
