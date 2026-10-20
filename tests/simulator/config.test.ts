@@ -48,7 +48,7 @@ describe("configmaps", () => {
     expect(r.output).toBe("configmap/app unchanged");
     r.c.files["cm.yaml"] = yaml.replace("blue", "red");
     expect(exec(r.c, "kubectl apply -f cm.yaml").output).toBe("configmap/app configured");
-    expect(exec(r.c, "kubectl apply -f cm.yaml").c.resources[0]).toMatchObject({ data: { color: "red" } });
+    expect(exec(r.c, "kubectl apply -f cm.yaml").c.resources.find((x) => x.kind === "ConfigMap")).toMatchObject({ data: { color: "red" } });
     const numeric = exec(createCluster({ files: { "cm.yaml": yaml.replace("blue", "8080") } }), "kubectl apply -f cm.yaml");
     expect(numeric.error).toBe(true);
   });

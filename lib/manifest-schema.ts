@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { QUOTA_KEYS, parseHard } from "./simulator/admission";
+import { parseCpu, parseMemory, QUANTITY_ERROR } from "./simulator/quantity";
 
 const name = z.string().regex(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/);
 
@@ -36,9 +38,74 @@ const probe = z
 
 const keyRef = z.object({ name, key: configKey });
 
+// YAML reads `cpu: 1` as a number; the API accepts it as the quantity "1".
+const quantity = (parse: (q: string) => number | null) =>
+  z.union([z.string(), z.number()]).transform(String).refine((q) => parse(q) !== null, QUANTITY_ERROR);
+const resourceList = z.object({ cpu: quantity(parseCpu).optional(), memory: quantity(parseMemory).optional() }).strict();
+
+const resources = z
+  .object({ requests: resourceList.optional(), limits: resourceList.optional() })
+  .superRefine((r, ctx) => {
+    for (const [name, parse] of [["cpu", parseCpu], ["memory", parseMemory]] as const) {
+      const req = r.requests?.[name];
+      const lim = r.limits?.[name];
+      if (req !== undefined && lim !== undefined && parse(req)! > parse(lim)!) {
+        ctx.addIssue({ code: "custom", path: ["requests"], message: `Invalid value: "${req}": must be less than or equal to ${name} limit of ${lim}` });
+      }
+    }
+  });
+
+const matchExpression = z
+  .object({ key: labelKey, operator: z.enum(["In", "NotIn", "Exists", "DoesNotExist"]), values: z.array(z.string()).optional() })
+  .refine((e) => (e.operator === "In" || e.operator === "NotIn" ? !!e.values?.length : !e.values?.length), {
+    message: "values must be non-empty for In and NotIn, and empty for Exists and DoesNotExist",
+  });
+const nodeSelectorTerm = z.object({ matchExpressions: z.array(matchExpression).optional() });
+const labelSelector = z.object({ matchLabels: labels.optional(), matchExpressions: z.array(matchExpression).optional() });
+const taintEffect = z.enum(["NoSchedule", "PreferNoSchedule", "NoExecute"]);
+
+const toleration = z
+  .object({
+    key: labelKey.optional(),
+    operator: z.enum(["Equal", "Exists"]).optional(),
+    value: z.string().regex(LABEL_VALUE_RE, "invalid label value").optional(),
+    effect: taintEffect.optional(),
+    tolerationSeconds: z.number().int().optional(),
+  })
+  .refine((t) => !(t.operator === "Exists" && t.value), { message: "value must be empty when operator is 'Exists'", path: ["value"] })
+  .refine((t) => t.key !== undefined || t.operator === "Exists", { message: "operator must be Exists when key is empty", path: ["operator"] });
+
+const affinity = z.object({
+  nodeAffinity: z
+    .object({
+      requiredDuringSchedulingIgnoredDuringExecution: z.object({ nodeSelectorTerms: z.array(nodeSelectorTerm).min(1) }).optional(),
+      preferredDuringSchedulingIgnoredDuringExecution: z
+        .array(z.object({ weight: z.number().int().min(1).max(100), preference: nodeSelectorTerm }))
+        .optional(),
+    })
+    .optional(),
+  podAntiAffinity: z
+    .object({
+      requiredDuringSchedulingIgnoredDuringExecution: z
+        .array(z.object({ labelSelector: labelSelector.optional(), topologyKey: labelKey }))
+        .optional(),
+    })
+    .optional(),
+});
+
+const volumeMount = z.object({
+  name,
+  mountPath: z.string().startsWith("/"),
+  readOnly: z.boolean().optional(),
+  subPath: z.string().regex(/^[^/]/, "must be a relative path").refine((p) => !p.split("/").includes(".."), "must not contain '..'").optional(),
+});
+
 const container = z.object({
   name,
   image: z.string().min(1),
+  command: z.array(z.string()).optional(),
+  args: z.array(z.string()).optional(),
+  volumeMounts: z.array(volumeMount).optional(),
   ports: z
     .array(z.object({ containerPort: port, name: portName.optional(), protocol: z.enum(["TCP", "UDP", "SCTP"]).optional() }))
     .optional(),
@@ -66,25 +133,63 @@ const container = z.object({
   readinessProbe: probe.optional(),
   livenessProbe: probe.optional(),
   startupProbe: probe.optional(),
-  resources: z
-    .object({ requests: z.record(z.string(), z.string()).optional(), limits: z.record(z.string(), z.string()).optional() })
-    .optional(),
+  resources: resources.optional(),
 });
+
+const keyToPath = z.object({ key: configKey, path: z.string().regex(/^[^/]/, "must be a relative path") });
+
+const volumeSources = ["emptyDir", "hostPath", "configMap", "secret", "persistentVolumeClaim"] as const;
+
+const volume = z
+  .object({
+    name,
+    emptyDir: z.object({ medium: z.enum(["", "Memory"]).optional(), sizeLimit: quantity(parseMemory).optional() }).optional(),
+    hostPath: z.object({ path: z.string().startsWith("/"), type: z.string().optional() }).optional(),
+    configMap: z.object({ name, items: z.array(keyToPath).optional() }).optional(),
+    secret: z.object({ secretName: name, items: z.array(keyToPath).optional() }).optional(),
+    persistentVolumeClaim: z.object({ claimName: name, readOnly: z.boolean().optional() }).optional(),
+  })
+  .refine((v) => volumeSources.filter((k) => v[k] !== undefined).length === 1, `must specify exactly one of ${volumeSources.join(", ")}`);
+
+const uniqueNames = (items?: { name: string }[]) => !items || new Set(items.map((i) => i.name)).size === items.length;
 
 const podSpec = z.object({
   containers: z.array(container).min(1),
+  volumes: z.array(volume).refine(uniqueNames, "volume names must be unique").optional(),
+  serviceAccountName: name.optional(),
+  automountServiceAccountToken: z.boolean().optional(),
   restartPolicy: z.enum(["Always", "OnFailure", "Never"]).optional(),
+  nodeName: name.optional(),
+  nodeSelector: labels.optional(),
+  tolerations: z.array(toleration).optional(),
+  affinity: affinity.optional(),
 });
+
+const limitRangeItem = z.object({
+  type: z.enum(["Container", "Pod", "PersistentVolumeClaim"]),
+  default: resourceList.optional(),
+  defaultRequest: resourceList.optional(),
+  min: resourceList.optional(),
+  max: resourceList.optional(),
+});
+
+const quotaHard = z
+  .record(z.string(), z.union([z.string(), z.number()]).transform(String))
+  .superRefine((hard, ctx) => {
+    for (const [key, value] of Object.entries(hard)) {
+      if (!QUOTA_KEYS.includes(key)) ctx.addIssue({ code: "custom", path: [key], message: `unsupported quota key, use one of ${QUOTA_KEYS.join(", ")}` });
+      else if (parseHard(key, value) === null) ctx.addIssue({ code: "custom", path: [key], message: QUANTITY_ERROR });
+    }
+  });
 
 const intOrPercent = z.union([z.number().int().min(0), z.string().regex(/^\d+%$/)]);
 
-const workloadSpec = z.object({
-  replicas: z.number().int().min(0),
-  selector: z.object({ matchLabels: labels }),
-  template: z.object({ metadata: z.object({ labels, annotations: annotations.optional() }), spec: podSpec }),
-});
+const selector = z.object({ matchLabels: labels });
+const podTemplate = z.object({ metadata: z.object({ labels, annotations: annotations.optional() }), spec: podSpec });
 
-const selectorMatchesTemplate = (s: z.infer<typeof workloadSpec>) =>
+const workloadSpec = z.object({ replicas: z.number().int().min(0), selector, template: podTemplate });
+
+const selectorMatchesTemplate = (s: { selector: { matchLabels: Record<string, string> }; template: { metadata: { labels: Record<string, string> } } }) =>
   Object.entries(s.selector.matchLabels).every(([k, v]) => s.template.metadata.labels[k] === v);
 const selectorError = { message: "selector does not match template labels", path: ["selector"] };
 
@@ -107,7 +212,7 @@ const strategy = z
 const serviceSpec = z
   .object({
     type: z.enum(["ClusterIP", "NodePort", "LoadBalancer"]).optional(),
-    clusterIP: z.string().regex(/^10\.96\.\d{1,3}\.\d{1,3}$/, "must be an IP in 10.96.0.0/16").optional(),
+    clusterIP: z.union([z.literal("None"), z.string().regex(/^10\.96\.\d{1,3}\.\d{1,3}$/, "must be an IP in 10.96.0.0/16 or None")]).optional(),
     selector: labels.optional(),
     ports: z
       .array(
@@ -128,12 +233,111 @@ const serviceSpec = z
   .refine((s) => s.ports.length === 1 || s.ports.every((p) => p.name), {
     message: "ports need a name when there is more than one",
     path: ["ports"],
+  })
+  .refine((s) => !(s.clusterIP === "None" && (s.type ?? "ClusterIP") !== "ClusterIP"), {
+    message: "Invalid value: \"None\": may not be set to 'None' for NodePort or LoadBalancer services",
+    path: ["clusterIP"],
   });
+
+const accessMode = z.enum(["ReadWriteOnce", "ReadOnlyMany", "ReadWriteMany", "ReadWriteOncePod"]);
+const storage = quantity(parseMemory);
+
+const claimSpec = z.object({
+  accessModes: z.array(accessMode).min(1),
+  resources: z.object({ requests: z.object({ storage }) }),
+  storageClassName: z.string().optional(),
+  volumeName: name.optional(),
+});
+
+const jobSpec = z.object({
+  completions: z.number().int().min(1).optional(),
+  parallelism: z.number().int().min(0).optional(),
+  backoffLimit: z.number().int().min(0).optional(),
+  activeDeadlineSeconds: z.number().int().min(1).optional(),
+  ttlSecondsAfterFinished: z.number().int().min(0).optional(),
+  template: z.object({ metadata: z.object({ labels: labels.optional(), annotations: annotations.optional() }).optional(), spec: podSpec }),
+});
+
+const clusterMetadata = z.object({ name, labels: labels.optional(), annotations: annotations.optional() });
+
+const dnsName = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+const ingressHost = z
+  .string()
+  .refine((h) => dnsName.test(h.replace(/^\*\./, "")), "must be a DNS name, optionally starting with *.")
+  .refine((h) => !/^[\d.]+$/.test(h), "must be a DNS name, not an IP address");
+
+const ingressBackend = z.object({
+  service: z.object({
+    name,
+    port: z.object({ number: port.optional(), name: portName.optional() }).refine((p) => exactlyOne({ a: p.number, b: p.name }), "must specify exactly one of number or name"),
+  }),
+});
+
+const ingressSpec = z
+  .object({
+    ingressClassName: name.optional(),
+    defaultBackend: ingressBackend.optional(),
+    tls: z.array(z.object({ hosts: z.array(ingressHost).optional(), secretName: name.optional() })).optional(),
+    rules: z
+      .array(
+        z.object({
+          host: ingressHost.optional(),
+          http: z
+            .object({
+              paths: z
+                .array(z.object({ path: z.string().startsWith("/").optional(), pathType: z.enum(["Prefix", "Exact", "ImplementationSpecific"]), backend: ingressBackend }))
+                .min(1)
+                .refine((ps) => ps.every((p) => p.pathType === "ImplementationSpecific" || p.path !== undefined), "path is required for pathType Prefix and Exact"),
+            })
+            .optional(),
+        }),
+      )
+      .optional(),
+  })
+  .refine((s) => s.defaultBackend || s.rules?.length, "either `defaultBackend` or `rules` must be specified");
+
+const cidr = z.string().regex(/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/, "must be a CIDR such as 10.0.0.0/16");
+const networkPeer = z
+  .object({ podSelector: labelSelector.optional(), namespaceSelector: labelSelector.optional(), ipBlock: z.object({ cidr, except: z.array(cidr).optional() }).optional() })
+  .refine((p) => (p.ipBlock ? !p.podSelector && !p.namespaceSelector : p.podSelector || p.namespaceSelector), "must specify ipBlock alone, or podSelector and/or namespaceSelector");
+const networkPort = z.object({ protocol: z.enum(["TCP", "UDP", "SCTP"]).optional(), port: portRef.optional() });
+
+const policyRule = z
+  .object({
+    apiGroups: z.array(z.string()).optional(),
+    resources: z.array(z.string().min(1)).optional(),
+    verbs: z.array(z.enum(["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection", "use", "bind", "escalate", "impersonate", "proxy", "*"])).min(1),
+    resourceNames: z.array(z.string().min(1)).optional(),
+    nonResourceURLs: z.array(z.string().startsWith("/").or(z.literal("*"))).optional(),
+  })
+  .refine((r) => (r.nonResourceURLs?.length ? !r.resources?.length : !!r.resources?.length && r.apiGroups !== undefined), "a rule needs apiGroups and resources, or only nonResourceURLs");
+
+const subject = z.object({
+  kind: z.enum(["User", "Group", "ServiceAccount"]),
+  name: z.string().min(1),
+  namespace: name.optional(),
+  apiGroup: z.string().optional(),
+});
+const roleRef = z.object({ apiGroup: z.literal("rbac.authorization.k8s.io"), kind: z.enum(["Role", "ClusterRole"]), name });
+const rbacVersion = z.literal("rbac.authorization.k8s.io/v1");
 
 /** A deliberately small subset of the real Kubernetes schemas, covering what the chapters teach. */
 export const manifestSchema = z.discriminatedUnion("kind", [
-  z.object({ apiVersion: z.literal("v1"), kind: z.literal("Namespace"), metadata: z.object({ name }) }),
+  z.object({ apiVersion: z.literal("v1"), kind: z.literal("Namespace"), metadata: z.object({ name, labels: labels.optional(), annotations: annotations.optional() }) }),
   z.object({ apiVersion: z.literal("v1"), kind: z.literal("Pod"), metadata, spec: podSpec }),
+  z.object({
+    apiVersion: z.literal("v1"),
+    kind: z.literal("Node"),
+    metadata: z.object({ name, labels: labels.optional(), annotations: annotations.optional() }),
+    spec: z
+      .object({
+        taints: z.array(z.object({ key: labelKey, value: z.string().regex(LABEL_VALUE_RE, "invalid label value").optional(), effect: taintEffect })).optional(),
+        unschedulable: z.boolean().optional(),
+      })
+      .optional(),
+  }),
+  z.object({ apiVersion: z.literal("v1"), kind: z.literal("LimitRange"), metadata, spec: z.object({ limits: z.array(limitRangeItem).min(1) }) }),
+  z.object({ apiVersion: z.literal("v1"), kind: z.literal("ResourceQuota"), metadata, spec: z.object({ hard: quotaHard }) }),
   z.object({
     apiVersion: z.literal("apps/v1"),
     kind: z.literal("ReplicaSet"),
@@ -147,6 +351,110 @@ export const manifestSchema = z.discriminatedUnion("kind", [
     spec: workloadSpec.extend({ strategy: strategy.optional() }).refine(selectorMatchesTemplate, selectorError),
   }),
   z.object({ apiVersion: z.literal("v1"), kind: z.literal("Service"), metadata, spec: serviceSpec }),
+  z.object({ apiVersion: z.literal("batch/v1"), kind: z.literal("Job"), metadata, spec: jobSpec }),
+  z.object({
+    apiVersion: z.literal("batch/v1"),
+    kind: z.literal("CronJob"),
+    metadata,
+    spec: z.object({
+      schedule: z.string().min(1),
+      timeZone: z.string().optional(),
+      suspend: z.boolean().optional(),
+      concurrencyPolicy: z.enum(["Allow", "Forbid", "Replace"]).optional(),
+      successfulJobsHistoryLimit: z.number().int().min(0).optional(),
+      failedJobsHistoryLimit: z.number().int().min(0).optional(),
+      startingDeadlineSeconds: z.number().int().min(0).optional(),
+      jobTemplate: z.object({ metadata: z.object({ labels: labels.optional(), annotations: annotations.optional() }).optional(), spec: jobSpec }),
+    }),
+  }),
+  z.object({
+    apiVersion: z.literal("apps/v1"),
+    kind: z.literal("DaemonSet"),
+    metadata,
+    spec: z
+      .object({
+        selector,
+        template: podTemplate,
+        updateStrategy: z
+          .object({
+            type: z.enum(["RollingUpdate", "OnDelete"]),
+            rollingUpdate: z.object({ maxUnavailable: intOrPercent.optional(), maxSurge: intOrPercent.optional() }).optional(),
+          })
+          .optional(),
+      })
+      .refine(selectorMatchesTemplate, selectorError),
+  }),
+  z.object({
+    apiVersion: z.literal("apps/v1"),
+    kind: z.literal("StatefulSet"),
+    metadata,
+    spec: z
+      .object({
+        serviceName: z.string().optional(),
+        replicas: z.number().int().min(0).optional(),
+        selector,
+        template: podTemplate,
+        podManagementPolicy: z.enum(["OrderedReady", "Parallel"]).optional(),
+        updateStrategy: z.object({ type: z.enum(["RollingUpdate", "OnDelete"]) }).optional(),
+        volumeClaimTemplates: z.array(z.object({ metadata: z.object({ name, labels: labels.optional() }), spec: claimSpec })).refine((t) => uniqueNames(t.map((x) => x.metadata)), "claim template names must be unique").optional(),
+      })
+      .refine(selectorMatchesTemplate, selectorError),
+  }),
+  z.object({
+    apiVersion: z.literal("storage.k8s.io/v1"),
+    kind: z.literal("StorageClass"),
+    metadata: clusterMetadata,
+    provisioner: z.string().min(1),
+    reclaimPolicy: z.enum(["Delete", "Retain"]).optional(),
+    volumeBindingMode: z.enum(["Immediate", "WaitForFirstConsumer"]).optional(),
+    allowVolumeExpansion: z.boolean().optional(),
+    parameters: z.record(z.string(), z.string()).optional(),
+  }),
+  z.object({
+    apiVersion: z.literal("v1"),
+    kind: z.literal("PersistentVolume"),
+    metadata: clusterMetadata,
+    spec: z.object({
+      capacity: z.object({ storage }),
+      accessModes: z.array(accessMode).min(1),
+      persistentVolumeReclaimPolicy: z.enum(["Delete", "Retain"]).optional(),
+      storageClassName: z.string().optional(),
+      hostPath: z.object({ path: z.string().startsWith("/"), type: z.string().optional() }),
+    }),
+  }),
+  z.object({ apiVersion: z.literal("v1"), kind: z.literal("PersistentVolumeClaim"), metadata, spec: claimSpec }),
+  z.object({ apiVersion: z.literal("networking.k8s.io/v1"), kind: z.literal("Ingress"), metadata, spec: ingressSpec }),
+  z.object({
+    apiVersion: z.literal("networking.k8s.io/v1"),
+    kind: z.literal("IngressClass"),
+    metadata: clusterMetadata,
+    spec: z.object({ controller: z.string().min(1) }),
+  }),
+  z.object({
+    apiVersion: z.literal("networking.k8s.io/v1"),
+    kind: z.literal("NetworkPolicy"),
+    metadata,
+    spec: z.object({
+      podSelector: labelSelector,
+      policyTypes: z.array(z.enum(["Ingress", "Egress"])).optional(),
+      ingress: z.array(z.object({ from: z.array(networkPeer).optional(), ports: z.array(networkPort).optional() })).optional(),
+      egress: z.array(z.object({ to: z.array(networkPeer).optional(), ports: z.array(networkPort).optional() })).optional(),
+    }),
+  }),
+  z.object({ apiVersion: z.literal("v1"), kind: z.literal("ServiceAccount"), metadata, automountServiceAccountToken: z.boolean().optional() }),
+  z.object({ apiVersion: rbacVersion, kind: z.literal("Role"), metadata, rules: z.array(policyRule).optional() }),
+  z.object({ apiVersion: rbacVersion, kind: z.literal("ClusterRole"), metadata: clusterMetadata, rules: z.array(policyRule).optional() }),
+  z.object({ apiVersion: rbacVersion, kind: z.literal("RoleBinding"), metadata, subjects: z.array(subject).optional(), roleRef }),
+  z.object({
+    apiVersion: rbacVersion,
+    kind: z.literal("ClusterRoleBinding"),
+    metadata: clusterMetadata,
+    subjects: z
+      .array(subject)
+      .refine((ss) => ss.every((x) => x.kind !== "ServiceAccount" || x.namespace), "a ServiceAccount subject needs a namespace")
+      .optional(),
+    roleRef,
+  }),
   z.object({ apiVersion: z.literal("v1"), kind: z.literal("ConfigMap"), metadata, data: z.record(configKey, z.string()).optional() }),
   z.object({
     apiVersion: z.literal("v1"),

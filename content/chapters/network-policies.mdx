@@ -1,0 +1,203 @@
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## Every Pod can reach every Pod
+
+By default a Kubernetes cluster has a flat network. Any Pod can open a connection to any other Pod, in any namespace, on any port. Namespaces group objects, but they are not a firewall.
+
+That is convenient while you build, and a problem later. If an attacker gets into your frontend container, nothing stops them from connecting straight to the database.
+
+A **NetworkPolicy** restricts which traffic may reach a group of Pods (ingress) and which traffic they may send (egress). It selects Pods by label, like a Service does.
+
+## Policies need a CNI plugin that enforces them
+
+The API server accepts and stores a NetworkPolicy in any cluster. Enforcing it is the job of the network plugin (CNI) running on each node, which turns policies into packet filters.
+
+- **Calico** and **Cilium** enforce NetworkPolicy.
+- **flannel** on its own does not. It only provides connectivity, so your policies are stored and silently ignored.
+
+<Callout title="Common mistake: trusting a policy you never tested">
+  `kubectl get netpol` listing your policy proves nothing about enforcement. On a cluster whose plugin ignores
+  policies, everything still gets through. Test every policy from a real Pod, as shown at the end of this chapter.
+</Callout>
+
+## How isolation works
+
+Three rules explain almost every policy:
+
+1. **A Pod is isolated per direction.** A Pod becomes isolated for ingress once any policy that selects it lists `Ingress` in `policyTypes`. Egress works the same way with `Egress`. A Pod that no policy selects is not isolated at all.
+2. **Rules only allow.** There are no deny rules and no priorities. For an isolated Pod, traffic is allowed if any rule in any policy that selects it matches. Everything else is dropped.
+3. **Both ends must agree.** A connection from A to B needs A's egress to allow it (if A is isolated for egress) and B's ingress to allow it (if B is isolated for ingress).
+
+Replies on an allowed connection are let through automatically, so you only write rules for the side that opens the connection.
+
+If you leave out `policyTypes`, Kubernetes assumes `Ingress`, and adds `Egress` only when the policy has an `egress` section. Write it out so readers do not have to remember that.
+
+## Default deny, then allow
+
+The usual pattern is to deny everything in a namespace and then open the paths you need, one policy per path. Step through a three-tier shop app as policies are added.
+
+<Diagram id="netpol-tiers" />
+
+A default-deny for ingress selects every Pod with an empty `podSelector` and has no rules:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: default-deny-ingress
+  namespace: shop
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+```
+
+The egress version lists `Egress` instead. Listing both denies both directions:
+
+```yaml
+spec:
+  podSelector: {}
+  policyTypes:
+    - Ingress
+    - Egress
+```
+
+The opposite, an allow-all, has one empty rule. `ingress: [{}]` matches every source on every port, while a missing `ingress` section matches nothing. That one pair of braces is the difference between "allow all" and "deny all".
+
+<Callout title="Common mistake: trying to deny one source">
+  You cannot write "allow everything except the frontend". Because rules are additive, an allow-all policy anywhere
+  that selects the Pod lets the frontend in no matter what other policies say. Remove or narrow the rule that matches
+  the source instead.
+</Callout>
+
+## Choosing sources and destinations
+
+Inside `ingress[].from` (and `egress[].to`), each list element picks peers in one of these ways:
+
+- `podSelector`: Pods with these labels **in the policy's own namespace**.
+- `namespaceSelector`: every Pod in namespaces with these labels.
+- `namespaceSelector` and `podSelector` **in the same element**: Pods with these labels in namespaces with those labels.
+- `ipBlock`: a CIDR range, for traffic to or from outside the cluster.
+
+An empty selector, `{}`, matches everything. So `namespaceSelector: {}` means every Pod in every namespace.
+
+To select a namespace by name, use the label `kubernetes.io/metadata.name`. The API server sets it on every namespace automatically, with the namespace's name as the value:
+
+```yaml
+- namespaceSelector:
+    matchLabels:
+      kubernetes.io/metadata.name: monitoring
+```
+
+### AND versus OR
+
+The most common NetworkPolicy bug is one dash. Compare these two `from` lists:
+
+```text
+# One element: AND                      # Two elements: OR
+from:                                   from:
+  - namespaceSelector:                    - namespaceSelector:
+      matchLabels:                            matchLabels:
+        team: ops                               team: ops
+    podSelector:                          - podSelector:
+      matchLabels:                              matchLabels:
+        app: monitor                              app: monitor
+```
+
+On the left, `podSelector` belongs to the same list item, so a source must be a monitor Pod **and** sit in an ops namespace. On the right, the extra `-` starts a second item, so any Pod in an ops namespace **or** any monitor Pod in the policy's namespace gets in.
+
+<Diagram id="netpol-and-or" />
+
+## Ports
+
+A rule's `ports` list limits which destination ports it opens. Without it, the rule opens every port.
+
+```yaml
+ports:
+  - protocol: TCP
+    port: 8080
+```
+
+`port` can be a number or a named container port. It is the port on the Pod, not the Service port. Policies are checked after a Service address has been translated to a Pod IP and `targetPort`, so a Service with `port: 80` and `targetPort: 8080` needs a policy that allows 8080.
+
+## Egress and DNS
+
+Egress policies use `egress[].to` and `ports` the same way. The catch is DNS. When a Pod calls `http://db:6379`, it first asks the cluster DNS to resolve `db`. That lookup is an egress connection to the DNS Pods in `kube-system` on port 53. Under a default-deny-egress, it is blocked, and the call fails with `bad address 'db'` before it even tries `db`.
+
+Allow DNS for every Pod in the namespace with one policy:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: NetworkPolicy
+metadata:
+  name: allow-dns
+  namespace: shop
+spec:
+  podSelector: {}
+  policyTypes:
+    - Egress
+  egress:
+    - to:
+        - namespaceSelector:
+            matchLabels:
+              kubernetes.io/metadata.name: kube-system
+          podSelector:
+            matchLabels:
+              k8s-app: kube-dns
+      ports:
+        - protocol: UDP
+          port: 53
+        - protocol: TCP
+          port: 53
+```
+
+Note the AND: one element with both selectors, so only the DNS Pods in `kube-system` are allowed.
+
+<Callout title="Common mistake: forgetting the other side">
+  If api is isolated for egress and db for ingress, api to db needs two rules: an egress rule on api allowing db,
+  and an ingress rule on db allowing api. Either one alone still drops the connection.
+</Callout>
+
+## The manifests
+
+The default deny from the diagram:
+
+<YamlWalkthrough id="netpol-default-deny" />
+
+And the policy that opens frontend to api on top of it:
+
+<YamlWalkthrough id="netpol-allow-frontend" />
+
+## Testing a policy
+
+Test from inside a Pod that should or should not get through. `kubectl exec` runs a command in the container; `wget -T 2` gives up after two seconds:
+
+```bash
+kubectl get pods -n shop
+kubectl exec frontend-5c8d7f9b6d-k2x7p -n shop -- wget -qO- -T 2 http://api:8080
+```
+
+Read the result by how it fails:
+
+- **A response**: the path is open.
+- **`wget: download timed out`**: a policy dropped the packets. Dropped traffic gets no answer, so the client waits.
+- **`Connection refused`**: the packets arrived but nothing listens on that port. The policy is not the problem.
+- **`wget: bad address`**: the name did not resolve. Check the Service name, or DNS egress if egress is restricted.
+
+`curl -s -m 2 <url>` does the same in images that ship curl. List policies with `kubectl get netpol` and read one with `kubectl describe netpol <name>`.
+
+## Practice
+
+The shop namespace already has a default-deny-ingress policy. Open exactly the paths the app needs. Write your policies in `allow.yaml` in the Files panel.
+
+<Lab id="netpol-shop" />
+
+## Check yourself
+
+<Quiz id="network-policies" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).

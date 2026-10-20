@@ -1,0 +1,245 @@
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## Container filesystems are temporary
+
+Every container starts from a fresh copy of its image's filesystem. Anything the process writes, such as an uploaded file or a database page, lands in a writable layer that belongs to that one container. When the container restarts after a crash, the kubelet starts a new container from the image and the writable layer is gone. When the Pod is deleted or replaced by a rollout, the same thing happens to every container in it.
+
+That is fine for stateless web servers and a problem for anything that must keep data. Kubernetes solves it with **volumes**: directories that live outside the container's writable layer and are mounted into it at a path you choose.
+
+## volumes and volumeMounts
+
+A volume is declared in two places, and both are needed:
+
+- `spec.volumes` at the Pod level names the volume and says where its data comes from (`emptyDir`, `persistentVolumeClaim`, `configMap`, and so on).
+- `volumeMounts` in each container says which of those volumes to mount and at what path.
+
+```yaml
+spec:
+  containers:
+    - name: app
+      image: busybox:1.36
+      volumeMounts:
+        - name: scratch
+          mountPath: /tmp/scratch
+  volumes:
+    - name: scratch
+      emptyDir: {}
+```
+
+The `name` links the two. A mount that names a volume not listed in `volumes` is rejected when you apply the Pod. A volume that no container mounts is allowed but does nothing. Two optional mount fields come up often: `readOnly: true` mounts the volume read-only for that container, and `subPath` mounts one file or subdirectory of the volume instead of its root.
+
+## emptyDir: scratch space for one Pod
+
+An `emptyDir` volume is created empty when the Pod is assigned to a node and deleted when the Pod is removed from that node. It survives container restarts, because it belongs to the Pod, not the container.
+
+Its main use is sharing files between containers in the same Pod. A sidecar that writes log files and a main container that reads them can both mount the same `emptyDir`:
+
+```yaml
+spec:
+  containers:
+    - name: web
+      image: nginx:1.27
+      volumeMounts:
+        - name: shared
+          mountPath: /usr/share/nginx/html
+    - name: content
+      image: busybox:1.36
+      command: ["sleep", "3600"]
+      volumeMounts:
+        - name: shared
+          mountPath: /work
+  volumes:
+    - name: shared
+      emptyDir: {}
+```
+
+A file written to `/work/index.html` in the `content` container appears as `/usr/share/nginx/html/index.html` in `web`. The mount paths differ, the data is the same.
+
+By default the data sits on the node's disk. `emptyDir: { medium: Memory }` uses a tmpfs instead, which is faster but counts toward the container's memory limit. `sizeLimit` caps how much the volume may hold; a Pod that goes over is evicted.
+
+<Callout title="Common mistake: using emptyDir for data you want to keep">
+  emptyDir data is deleted with the Pod. A Deployment rollout, a node drain, or `kubectl delete pod` all create a
+  new Pod with a new, empty directory. Use emptyDir for caches and files shared between containers, and a
+  PersistentVolumeClaim for anything that must outlive the Pod.
+</Callout>
+
+## hostPath, and why to avoid it
+
+A `hostPath` volume mounts a file or directory from the node's own filesystem into the Pod:
+
+```yaml
+volumes:
+  - name: logs
+    hostPath:
+      path: /var/log
+```
+
+It looks like an easy way to keep data, but it has two problems:
+
+- **The data is tied to one node.** If the Pod is rescheduled to another node, it sees that node's directory, which is empty or holds different data.
+- **It is a security hole.** A Pod with `hostPath` can read or change files on the node, such as other Pods' data, kubelet credentials, or the container runtime socket. The Pod Security Standards forbid hostPath at the `baseline` and `restricted` levels for this reason.
+
+Legitimate users are node agents, usually DaemonSets, that need the node's files on purpose: a log collector reading `/var/log`, or a storage or network driver. Application Pods should not use it.
+
+## ConfigMap and Secret volumes
+
+A ConfigMap or Secret can also be a volume. Each key becomes a file under the mount path, which is how you deliver whole config files and certificates:
+
+```yaml
+volumes:
+  - name: conf
+    configMap:
+      name: nginx-conf
+  - name: certs
+    secret:
+      secretName: web-tls
+```
+
+These volumes are read-only and updated in place when the source object changes (except `subPath` mounts). The [ConfigMaps and Secrets chapter](/chapters/config) covers when to use files versus environment variables and how updates arrive.
+
+## PersistentVolumes, claims, and classes
+
+For data that must outlive any one Pod, Kubernetes splits storage into three objects so that the people who run the cluster and the people who run apps each deal with their own part:
+
+| Object | Scope | Usually created by | What it says |
+| --- | --- | --- | --- |
+| **StorageClass** | cluster | cluster admin | A kind of storage on offer: which provisioner creates it, with which parameters, and what happens when it is released. |
+| **PersistentVolume (PV)** | cluster | admin, or a provisioner automatically | One actual piece of storage: its size, access modes, reclaim policy, and where the data really lives. |
+| **PersistentVolumeClaim (PVC)** | namespace | developer | A request: "I need 1Gi I can mount read-write, of class standard". |
+
+A Pod never names a PV. It names a claim in its own namespace, and Kubernetes binds the claim to a PV. That way the same Pod spec works in a cloud cluster, a laptop cluster, or an on-premises cluster: only the class and the PVs behind it change.
+
+```bash
+kubectl get storageclass
+kubectl get pv
+kubectl get pvc
+```
+
+PVs and StorageClasses are cluster-scoped, so `-n` does not apply to them. Claims are namespaced.
+
+### Static and dynamic provisioning
+
+There are two ways a PV comes to exist:
+
+- **Static provisioning.** An admin creates disks and writes a PV object for each one ahead of time. Claims bind to whichever matching PV is free.
+- **Dynamic provisioning.** A claim names a StorageClass, and that class's **provisioner** creates a new disk and a PV for exactly that claim. Nobody writes PV objects by hand. This is how almost every cluster works today.
+
+Step through what happens when a Pod uses a dynamically provisioned claim:
+
+<Diagram id="pvc-provisioning" />
+
+A claim that leaves out `storageClassName` gets the cluster's **default class**, the one annotated `storageclass.kubernetes.io/is-default-class: "true"`. `kubectl get storageclass` marks it `(default)`. A claim with `storageClassName: ""` explicitly opts out: it binds only to static PVs that have no class, and nothing is provisioned for it.
+
+<Callout title="Common mistake: naming a class that does not exist">
+  A claim with `storageClassName: fast` in a cluster without a class named fast stays Pending forever, and so does
+  every Pod that uses it. `kubectl describe pvc` shows `storageclass.storage.k8s.io "fast" not found`. Check
+  `kubectl get storageclass` before you copy a class name from another cluster's manifests.
+</Callout>
+
+### How a claim is matched to a volume
+
+When a claim is created, the control plane looks for an Available PV that satisfies all of these:
+
+- **Same class.** The PV's `storageClassName` equals the claim's.
+- **Access modes.** The PV offers every mode the claim asks for.
+- **Capacity.** The PV is at least as large as the request.
+
+Among the matches it picks the smallest. Binding is one to one: a PV holds at most one claim, even if it is far larger than the request. A 1Gi claim bound to a 10Gi PV gets all 10Gi, and `kubectl get pvc` shows a capacity of 10Gi. If no PV matches and the class can provision, a new PV of exactly the requested size is created. If neither works, the claim stays `Pending` until a matching PV appears.
+
+A claim's spec is immutable after creation apart from the storage request (for expansion). To change its class or access modes you delete the claim and create a new one.
+
+### Access modes
+
+Access modes describe how a volume may be mounted. Read them carefully, because the names suggest Pods but most of them are about nodes:
+
+| Mode | Short | Meaning |
+| --- | --- | --- |
+| `ReadWriteOnce` | RWO | Read-write by a **single node**. Several Pods on that same node can all mount it read-write. |
+| `ReadOnlyMany` | ROX | Read-only by many nodes at once. |
+| `ReadWriteMany` | RWX | Read-write by many nodes at once. Needs a shared file system such as NFS or CephFS. |
+| `ReadWriteOncePod` | RWOP | Read-write by a **single Pod** in the whole cluster. A second Pod that wants it stays Pending. |
+
+Which modes are possible depends on the storage. A cloud block disk can attach to one node at a time, so it offers RWO (and RWOP), not RWX. A claim asking for RWX from a class that cannot provide it never binds.
+
+Access modes are not a permission system inside the container. To mount a volume read-only in one container, set `readOnly: true` on its `volumeMount`.
+
+<Callout title="Common mistake: thinking ReadWriteOnce means one Pod">
+  Two replicas of a Deployment that share an RWO claim both start fine if they land on the same node, and the
+  second one is stuck in ContainerCreating with a Multi-Attach error if it lands on another node (with block
+  storage such as a cloud disk). If you need
+  exactly one writer, use ReadWriteOncePod. If you need one volume per replica, use a StatefulSet with
+  volumeClaimTemplates.
+</Callout>
+
+## The claim lifecycle and reclaim policies
+
+A claim and its PV move through a few phases. Step through them:
+
+<Diagram id="pvc-lifecycle" />
+
+What happens to the PV after its claim is deleted is the **reclaim policy**, `persistentVolumeReclaimPolicy` on the PV:
+
+- **Delete**: the PV and the underlying disk are deleted. Dynamically provisioned PVs take the class's `reclaimPolicy`, which defaults to Delete. Deleting the claim deletes the data.
+- **Retain**: the PV becomes `Released` and the disk and its data stay. The PV is not offered to new claims, because it still records the old claim. An admin copies or cleans the data and then deletes the PV, or removes its `claimRef` to make it Available again.
+- **Recycle** (scrub the files and reuse the PV) is deprecated. Do not use it.
+
+For databases and anything you cannot recreate, use a class (or PV) with `reclaimPolicy: Retain`, so a mistaken `kubectl delete pvc` does not take the data with it.
+
+### PVC protection
+
+You cannot pull a claim out from under a running Pod. Every claim carries the finalizer `kubernetes.io/pvc-protection`. If you delete a claim that a Pod still uses, the claim shows `Terminating` and is removed only after the last Pod using it is gone. PVs have the same guard (`kubernetes.io/pv-protection`) while they are bound.
+
+## Binding mode: WaitForFirstConsumer
+
+`volumeBindingMode` on the StorageClass decides when binding and provisioning happen:
+
+- **Immediate**: as soon as the claim is created. The disk is created before anyone knows where the Pod will run. In a multi-zone cluster the disk can end up in zone A while the Pod can only be scheduled in zone B, and the Pod never starts.
+- **WaitForFirstConsumer**: the claim stays `Pending` until a Pod that uses it is scheduled. The scheduler picks a node first, taking the Pod's requests, node selectors, and affinity into account, and the disk is created in that node's zone.
+
+So a `Pending` claim is normal for a WaitForFirstConsumer class until a Pod uses it. `kubectl describe pvc` says `waiting for first consumer to be created before binding`. Most cloud and local-disk classes use WaitForFirstConsumer.
+
+## Growing a volume
+
+If the StorageClass has `allowVolumeExpansion: true`, you can grow a claim by raising its request:
+
+```bash
+kubectl patch pvc data -p '{"spec":{"resources":{"requests":{"storage":"5Gi"}}}}'
+```
+
+The driver grows the disk, and the file system is resized, while the Pod keeps running for most CSI drivers. Volumes can only grow: lowering the request is rejected. Without `allowVolumeExpansion` the change is rejected too.
+
+## CSI: where the drivers come from
+
+Kubernetes does not know how to create an EBS volume, a Ceph image, or an NFS export by itself. Storage vendors ship **CSI drivers** (Container Storage Interface) that run in the cluster as ordinary Pods: a controller part that creates, deletes, attaches, and resizes volumes, and a node part, usually a DaemonSet, that mounts them on each node. A StorageClass's `provisioner` field names the driver, for example `ebs.csi.aws.com`. The storage plugins that used to be compiled into Kubernetes have been migrated to CSI, so a new kind of storage means installing a driver, not upgrading the cluster.
+
+## The manifests
+
+A claim for 1Gi of the standard class:
+
+<YamlWalkthrough id="pvc" />
+
+A Pod that mounts the claim and an emptyDir:
+
+<YamlWalkthrough id="pvc-pod" />
+
+A statically provisioned PV that an admin creates by hand:
+
+<YamlWalkthrough id="static-pv" />
+
+To bind to that PV, a claim must also set `storageClassName: ""`, ask only for ReadWriteOnce, and request 5Gi or less.
+
+## Practice
+
+A Pod that should write to a persistent volume is stuck in Pending. Fix its claim, then prove that the data outlives the Pod.
+
+<Lab id="volumes-pvc-fix" />
+
+## Check yourself
+
+<Quiz id="volumes" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).

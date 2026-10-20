@@ -11,6 +11,15 @@ import { data as labels } from "./chapters/labels.data";
 import { data as rollouts } from "./chapters/rollouts.data";
 import { data as config } from "./chapters/config.data";
 import { data as healthChecks } from "./chapters/health-checks.data";
+import { data as jobs } from "./chapters/jobs.data";
+import { data as ingress } from "./chapters/ingress.data";
+import { data as networkPolicies } from "./chapters/network-policies.data";
+import { data as resources } from "./chapters/resources.data";
+import { data as volumes } from "./chapters/volumes.data";
+import { data as daemonsetsStatefulsets } from "./chapters/daemonsets-statefulsets.data";
+import { data as scheduling } from "./chapters/scheduling.data";
+import { data as rbac } from "./chapters/rbac.data";
+import { data as troubleshooting } from "./chapters/troubleshooting.data";
 import type { ChapterData, Difficulty } from "./types";
 
 export type Chapter = {
@@ -126,6 +135,33 @@ export const chapters: Chapter[] = [
     data: rollouts,
   },
   {
+    slug: "jobs",
+    section: "Workloads & Networking",
+    title: "Jobs and CronJobs",
+    summary: "Run work to completion, retry failures, and start it on a schedule.",
+    difficulty: "intermediate",
+    ready: true,
+    data: jobs,
+  },
+  {
+    slug: "ingress",
+    section: "Workloads & Networking",
+    title: "Ingress",
+    summary: "Route HTTP traffic from outside the cluster to Services by host name and path.",
+    difficulty: "intermediate",
+    ready: true,
+    data: ingress,
+  },
+  {
+    slug: "network-policies",
+    section: "Workloads & Networking",
+    title: "Network Policies",
+    summary: "Decide which Pods may talk to which, and block everything else.",
+    difficulty: "advanced",
+    ready: true,
+    data: networkPolicies,
+  },
+  {
     slug: "config",
     section: "Configuration",
     title: "ConfigMaps and Secrets",
@@ -142,6 +178,60 @@ export const chapters: Chapter[] = [
     difficulty: "intermediate",
     ready: true,
     data: healthChecks,
+  },
+  {
+    slug: "resources",
+    section: "Configuration",
+    title: "Resource Requests and Limits",
+    summary: "Reserve CPU and memory for a container, cap what it may use, and see what happens when it does not fit.",
+    difficulty: "intermediate",
+    ready: true,
+    data: resources,
+  },
+  {
+    slug: "volumes",
+    section: "Storage & Scheduling",
+    title: "Volumes and Persistent Storage",
+    summary: "Keep data beyond a container's life with volumes, PersistentVolumeClaims, and StorageClasses.",
+    difficulty: "intermediate",
+    ready: true,
+    data: volumes,
+  },
+  {
+    slug: "daemonsets-statefulsets",
+    section: "Storage & Scheduling",
+    title: "DaemonSets and StatefulSets",
+    summary: "Run one Pod per node, or Pods with stable names and their own storage.",
+    difficulty: "intermediate",
+    ready: true,
+    data: daemonsetsStatefulsets,
+  },
+  {
+    slug: "scheduling",
+    section: "Storage & Scheduling",
+    title: "Scheduling: Selectors, Affinity, and Taints",
+    summary: "Steer Pods to the right nodes, keep them apart, and reserve nodes for special work.",
+    difficulty: "advanced",
+    ready: true,
+    data: scheduling,
+  },
+  {
+    slug: "rbac",
+    section: "Security & Operations",
+    title: "RBAC and ServiceAccounts",
+    summary: "Grant people and Pods exactly the API access they need, and check it with auth can-i.",
+    difficulty: "advanced",
+    ready: true,
+    data: rbac,
+  },
+  {
+    slug: "troubleshooting",
+    section: "Security & Operations",
+    title: "Troubleshooting",
+    summary: "A method and a symptom table for finding why a workload is not working.",
+    difficulty: "advanced",
+    ready: true,
+    data: troubleshooting,
   },
 ];
 

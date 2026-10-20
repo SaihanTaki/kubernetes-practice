@@ -1,0 +1,222 @@
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## Who are you, and what may you do?
+
+Every request to the API server, from `kubectl`, a controller, or an app inside a Pod, passes two checks in order:
+
+1. **Authentication** answers "who is this?". The API server reads the request's credentials and produces a username and a list of groups.
+2. **Authorization** answers "may this user do this?". The API server asks its authorizers whether that username and those groups may perform this verb on this resource. In almost every cluster, the main authorizer is **RBAC** (role-based access control).
+
+A request that fails authentication gets `401 Unauthorized`. A request that is authenticated but not allowed gets `403 Forbidden`:
+
+```text
+Error from server (Forbidden): pods is forbidden: User "jane" cannot list resource "pods" in API group "" in the namespace "default"
+```
+
+### Users are not API objects
+
+There is no `User` kind. You cannot run `kubectl create user`. Kubernetes trusts outside sources to say who a human is:
+
+- **Client certificates.** The certificate's common name (CN) becomes the username and each organization (O) becomes a group. Your kubeconfig from `kubeadm` holds a certificate for `kubernetes-admin` in a group such as `kubeadm:cluster-admins` or, on older clusters, `system:masters`.
+- **OIDC tokens** from an identity provider such as Google, Entra ID, Okta, or Dex. A claim in the token becomes the username, another the groups.
+- **Webhook token authentication** or a cloud provider's own integration (for example EKS maps IAM identities to Kubernetes users).
+
+So "user jane" is only a string that some credential produced. RBAC refers to it by that string. If jane leaves, you revoke her credentials at the source; deleting a RoleBinding only removes her permissions.
+
+<Callout title="Common mistake: trusting system:masters">
+  Members of the `system:masters` group bypass RBAC entirely, and you cannot revoke that with a RoleBinding. A
+  leaked certificate in that group stays all-powerful until it expires. Hand out credentials for named users or
+  groups that are bound to roles instead.
+</Callout>
+
+The one identity that *is* an API object is the **ServiceAccount**, the identity for processes running in Pods. More on that below.
+
+## The RBAC model
+
+RBAC answers one question: does any rule bound to this subject allow this request? It has three parts.
+
+- A **subject** is who: a `User`, a `Group`, or a `ServiceAccount`.
+- A **role** is a list of **rules**. Each rule allows some **verbs** on some **resources** in some **API groups**.
+- A **binding** connects subjects to one role.
+
+Step through the chain:
+
+<Diagram id="rbac-chain" />
+
+RBAC is purely additive. There are no deny rules. Permissions from every binding that names the subject (or one of its groups) are added together, and anything not allowed is denied.
+
+### Rules
+
+A rule lists what it allows:
+
+```yaml
+rules:
+  - apiGroups: [""]
+    resources: ["pods", "pods/log"]
+    verbs: ["get", "list", "watch"]
+  - apiGroups: ["apps"]
+    resources: ["deployments"]
+    verbs: ["get", "update", "patch"]
+    resourceNames: ["web"]
+```
+
+- **apiGroups**: the group part of the resource's `apiVersion`. Core resources (`v1`: pods, services, configmaps, secrets) are in the empty group `""`. Deployments are in `apps`, Jobs in `batch`, Roles in `rbac.authorization.k8s.io`. A rule with the wrong group matches nothing.
+- **resources**: lowercase plural names, as in the API URL: `pods`, not `Pod`.
+- **verbs**: `get` (one object), `list` and `watch` (collections), `create`, `update` (replace), `patch`, `delete`, `deletecollection`. `*` means all.
+- **resourceNames**: optional. Restricts the rule to named objects. It cannot restrict `create`, because the name is not part of the request URL when the object does not exist yet.
+
+**Subresources** are written as `resource/subresource` and are granted separately:
+
+| Subresource | Used by | Verb needed |
+| --- | --- | --- |
+| `pods/log` | `kubectl logs` | `get` |
+| `pods/exec` | `kubectl exec` | `create` |
+| `pods/portforward` | `kubectl port-forward` | `create` |
+| `deployments/scale` | `kubectl scale` | `patch` or `update` |
+
+Read access to `pods` does not include logs or exec. Granting `pods/exec` lets someone run commands in every matching container, which is much more than reading.
+
+## Role and ClusterRole, RoleBinding and ClusterRoleBinding
+
+Roles and bindings each come in a namespaced and a cluster-wide form.
+
+- A **Role** lives in a namespace and can only grant access inside that namespace.
+- A **ClusterRole** is cluster-scoped. It can describe namespaced resources (pods, secrets) and also cluster-scoped ones (nodes, namespaces, persistentvolumes) and non-resource URLs such as `/healthz`.
+- A **RoleBinding** lives in a namespace and grants its role's permissions **in that namespace only**. It can reference a Role in the same namespace or a ClusterRole.
+- A **ClusterRoleBinding** grants a ClusterRole's permissions in every namespace and on cluster-scoped resources.
+
+Select a row to see what each combination grants:
+
+<Diagram id="rbac-scope" />
+
+The middle row is the one to remember. Define a ClusterRole such as `pod-reader` once, then bind it with a RoleBinding in each namespace where a team needs it. The rules are written once, but each grant still stays inside one namespace.
+
+A binding's `roleRef` cannot be changed after creation. Changing it is rejected with `cannot change roleRef`, so delete the binding and create a new one. This stops someone who may only update bindings from swapping in a stronger role.
+
+### Built-in roles
+
+Every cluster ships with user-facing ClusterRoles:
+
+| ClusterRole | Grants | Typical binding |
+| --- | --- | --- |
+| `view` | Read most namespaced objects. Excludes Secrets and Roles/RoleBindings. | RoleBinding for read-only users |
+| `edit` | Read and write most namespaced objects, including Secrets. Cannot change Roles or RoleBindings. | RoleBinding for developers or CI |
+| `admin` | Everything in `edit`, plus Roles and RoleBindings in the namespace. Not the namespace itself or its quotas. | RoleBinding for a namespace owner |
+| `cluster-admin` | Every verb on every resource. | ClusterRoleBinding for platform admins only |
+
+```bash
+kubectl create rolebinding jane-view --clusterrole=view --user=jane -n shop
+```
+
+`view`, `edit`, and `admin` are aggregated: they collect rules from any ClusterRole labelled `rbac.authorization.k8s.io/aggregate-to-view` (or `-edit`, `-admin`), which is how CRDs add their resources to them. Cluster components use roles whose names start with `system:`. Leave those alone.
+
+## ServiceAccounts
+
+A ServiceAccount is a namespaced identity for software. A Pod runs as exactly one ServiceAccount, and code in the Pod uses its token to call the API server. Its RBAC username is:
+
+```text
+system:serviceaccount:<namespace>:<name>
+```
+
+It is also in the groups `system:serviceaccounts` (all ServiceAccounts) and `system:serviceaccounts:<namespace>`.
+
+```bash
+kubectl create serviceaccount deployer -n ci
+kubectl get serviceaccounts -n ci
+```
+
+Every namespace gets a ServiceAccount named `default`, created automatically. A Pod that does not set `spec.serviceAccountName` runs as `default`. That account has no RBAC permissions of its own beyond what every authenticated identity gets (API discovery and checking its own access). If you bind roles to `default`, every Pod in the namespace gets them, so give each app that needs API access its own ServiceAccount.
+
+### Tokens
+
+The kubelet asks the API server for a **projected token** for the Pod's ServiceAccount and mounts it at `/var/run/secrets/kubernetes.io/serviceaccount/token`, next to the cluster CA and the namespace. The token is short-lived (about an hour by default), refreshed by the kubelet before it expires, and bound to the Pod: when the Pod is deleted, the token stops working. Client libraries re-read the file, so apps do not notice the rotation.
+
+Since Kubernetes 1.24 no long-lived token Secret is created per ServiceAccount. For a short-lived token outside a Pod, run `kubectl create token deployer -n ci`.
+
+### Opting out of the token
+
+Most apps never call the Kubernetes API, and an unused token only helps an attacker who breaks into the container. Turn the mount off:
+
+```yaml
+apiVersion: v1
+kind: ServiceAccount
+metadata:
+  name: web
+automountServiceAccountToken: false
+```
+
+The same field exists in the Pod spec. If both are set, the Pod's value wins.
+
+## Least privilege
+
+Grant the smallest set of verbs and resources that does the job, in the fewest namespaces, to the narrowest subject. Some permissions give far more than they appear to:
+
+- **`list` or `watch` on secrets** returns every Secret's full contents, not just names. `get` on secrets without `resourceNames` is just as broad.
+- **`create` on pods** lets someone mount any Secret in the namespace and run a Pod as any ServiceAccount there, inheriting its permissions.
+- **`escalate` on roles** lets someone add permissions to a Role that they do not hold themselves. Normally the API server refuses that.
+- **`bind` on roles** lets someone bind a role they do not hold, for example bind `admin` to themselves.
+- **`impersonate` on users, groups, or serviceaccounts** lets someone act as another identity, which is what `--as` uses.
+- **`*` verbs or resources** grant anything added to the API later.
+
+Without `escalate` and `bind`, RBAC protects itself: you can only create a Role, or a binding to a role, whose permissions you already have.
+
+<Callout title="Common mistake: binding cluster-admin to get a CI job working">
+  A pipeline fails with Forbidden, someone runs `kubectl create clusterrolebinding ci --clusterrole=cluster-admin
+  --serviceaccount=ci:deployer`, and it works. Now anyone who can change the pipeline or read that token owns the
+  cluster. Read the Forbidden message, which names the verb, resource, API group, and namespace, and grant exactly
+  that.
+</Callout>
+
+## Testing permissions
+
+`kubectl auth can-i` asks the API server whether a request would be allowed. It prints `yes` or `no`:
+
+```bash
+kubectl auth can-i create deployments -n ci
+kubectl auth can-i list secrets -n ci --as=system:serviceaccount:ci:deployer
+kubectl auth can-i get pods --subresource=log -n ci --as=jane
+kubectl auth can-i --list -n ci --as=system:serviceaccount:ci:deployer
+```
+
+`--as` impersonates another user, and `--as-group` adds a group. This works because you, the admin, hold the `impersonate` permission. It works on every kubectl command, so `kubectl get pods -n ci --as=system:serviceaccount:ci:deployer` shows what the ServiceAccount actually sees, Forbidden errors included. Test both what should work and what must not.
+
+## The manifests
+
+A ServiceAccount for the deploy pipeline:
+
+<YamlWalkthrough id="rbac-serviceaccount" />
+
+A Role that reads Pods and updates Deployments in namespace `ci`:
+
+<YamlWalkthrough id="rbac-role" />
+
+A RoleBinding that grants the Role to the ServiceAccount:
+
+<YamlWalkthrough id="rbac-rolebinding" />
+
+`kubectl create role` writes one rule: every listed verb on every listed resource. So this Role, with different verbs for Pods and Deployments, needs YAML or two smaller Roles:
+
+```bash
+kubectl create role pod-reader --verb=get,list --resource=pods -n ci
+kubectl create role deployment-updater --verb=get,update --resource=deployments.apps -n ci
+kubectl create rolebinding deployer-pods --role=pod-reader --serviceaccount=ci:deployer -n ci
+kubectl create rolebinding deployer-deployments --role=deployment-updater --serviceaccount=ci:deployer -n ci
+```
+
+`--resource=deployments.apps` is `resource.group`, which sets `apiGroups: ["apps"]`. `--serviceaccount` takes `namespace:name`. `--user`, `--group`, and `--serviceaccount` can each be repeated to bind several subjects.
+
+## Practice
+
+The CI pipeline runs as ServiceAccount `deployer` in namespace `ci` and currently cannot do anything. Give it exactly the access it needs and prove it with `kubectl auth can-i`.
+
+<Lab id="rbac-deployer" />
+
+## Check yourself
+
+<Quiz id="rbac" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).

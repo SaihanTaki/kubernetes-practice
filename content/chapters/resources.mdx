@@ -1,0 +1,209 @@
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## Two numbers per resource
+
+Every container can declare two numbers for CPU and for memory, under `resources`:
+
+- A **request** is what the container is guaranteed. The scheduler uses it to decide which node has room for the Pod.
+- A **limit** is the most the container may use. The kubelet and the container runtime enforce it on the node while the container runs.
+
+```yaml
+resources:
+  requests:
+    cpu: 250m
+    memory: 256Mi
+  limits:
+    cpu: "1"
+    memory: 512Mi
+```
+
+Requests are about **placement**, limits are about **enforcement**. A container may use more than it requests, up to its limit, if the node has spare capacity. It can never get more than its limit.
+
+If you set only a limit, Kubernetes copies it into the request. If you set only a request, there is no limit (unless a LimitRange adds one, see below). If you set neither, the container requests nothing and can use whatever the node has free.
+
+## Units
+
+**CPU** is measured in cores. `1` is one vCPU or one physical core, depending on the machine. `500m` (500 millicores) and `0.5` mean the same thing. The smallest unit is `1m`.
+
+**Memory** is measured in bytes, with suffixes:
+
+| Suffix | Meaning | Example |
+| --- | --- | --- |
+| `Ki`, `Mi`, `Gi` | Powers of 1024 | `256Mi` = 268,435,456 bytes |
+| `k`, `M`, `G` | Powers of 1000 | `256M` = 256,000,000 bytes |
+| none | Plain bytes | `134217728` = 128Mi |
+
+`Mi` and `M` are not the same: `1Gi` is about 7% more than `1G`. Watch the case too: `400m` of memory means 0.4 bytes, not 400 megabytes.
+
+## What happens at the limit
+
+CPU and memory behave very differently when a container hits its limit.
+
+**CPU is compressible.** A container that wants more CPU than its limit is **throttled**: the kernel gives it its quota of CPU time in each 100 ms period and then pauses it until the next period. The process keeps running, only slower. Throttling shows up as higher latency, not as an error or a restart.
+
+**Memory is not compressible.** A process cannot be made to use less memory without freeing it. When a container goes over its memory limit, the kernel's OOM killer kills it. Kubernetes reports this as:
+
+```text
+    Last State:     Terminated
+      Reason:       OOMKilled
+      Exit Code:    137
+```
+
+Exit code 137 is 128 + 9: the process received `SIGKILL`. With the default `restartPolicy: Always`, the kubelet restarts the container, it grows again, it is killed again, and after a few rounds the Pod shows `CrashLoopBackOff`. Raising the limit (or fixing the leak) is the only fix; restarting does not help.
+
+## How the scheduler uses requests
+
+Each node reports its **capacity** (the hardware) and its **allocatable**: capacity minus what is reserved for the operating system, the kubelet, and the eviction threshold. Allocatable is what Pods can claim.
+
+When a new Pod needs a node, the scheduler adds up the **requests** of the Pods already on each node, adds the new Pod's requests, and keeps only the nodes where the total stays within allocatable, for CPU and memory separately. It does not look at actual usage. A node whose Pods request 3.5Gi but use 500Mi is full for a Pod that requests 1Gi.
+
+If no node passes, the Pod stays `Pending` and gets a `FailedScheduling` event:
+
+```text
+Warning  FailedScheduling  default-scheduler  0/3 nodes are available: 1 node(s) had untolerated taint {node-role.kubernetes.io/control-plane: }, 2 Insufficient memory. preemption: 0/3 nodes are available: 1 Preemption is not helpful for scheduling, 2 No preemption victims found for incoming pod.
+```
+
+The scheduler tries again whenever something changes, so the Pod is placed as soon as room appears: another Pod is deleted, a node is added, or you lower the request.
+
+Step through one node filling up:
+
+<Diagram id="resources-node-allocatable" />
+
+Limits are not part of this sum. The limits of the Pods on a node can add up to more than its allocatable, which is called **overcommit**. That is allowed, and it is why memory pressure and eviction exist.
+
+## QoS classes
+
+From a Pod's requests and limits Kubernetes derives a **Quality of Service class**, shown in `kubectl describe pod` and in `status.qosClass`:
+
+| Class | Rule |
+| --- | --- |
+| `Guaranteed` | Every container has CPU and memory limits, and requests equal to the limits. |
+| `Burstable` | Not Guaranteed, but at least one container has a CPU or memory request or limit. |
+| `BestEffort` | No container has any request or limit. |
+
+The class matters when a node runs out of memory. The kubelet watches node memory and, below its eviction threshold, **evicts** Pods to reclaim it. It first picks Pods whose usage is above their requests, ordered by Pod priority and then by how far above their requests they are. BestEffort Pods request nothing, so any usage puts them in that first group. Pods using less than they request, which includes every Guaranteed Pod, go last. If the kernel's OOM killer acts before the kubelet does, it uses scores derived from the same class: BestEffort processes are killed first, Guaranteed last.
+
+<Diagram id="resources-qos" />
+
+Evicted Pods are not restarted in place. Their controller creates replacements, which the scheduler places wherever requests fit.
+
+## LimitRange: defaults and bounds per namespace
+
+A **LimitRange** sets per-container rules for a namespace. When a Pod is created, the LimitRange admission step:
+
+- fills in `defaultRequest` for any container without a request,
+- fills in `default` as the limit for any container without a limit,
+- rejects the Pod if a value is below `min` or above `max`.
+
+```text
+Error from server (Forbidden): pods "big" is forbidden: maximum memory usage per Container is 1Gi, but limit is 2Gi
+```
+
+It only acts when a Pod is created. Existing Pods keep their values when you add or change a LimitRange. For Pods created by a Deployment, the rejection does not reach you as a `kubectl` error: the ReplicaSet records a `FailedCreate` event and the Pod never appears, so `kubectl describe replicaset` is where to look.
+
+## ResourceQuota: a budget per namespace
+
+A **ResourceQuota** caps the total a namespace can use: the sum of requests and limits across all its Pods, and counts of objects such as Pods, Services, or Secrets. Each new object is checked against what is already used:
+
+```text
+Error from server (Forbidden): pods "api-7d9c" is forbidden: exceeded quota: team-quota, requested: requests.memory=512Mi, used: requests.memory=3584Mi, limited: requests.memory=4Gi
+```
+
+A quota on a compute resource forces every new Pod in the namespace to declare that resource. If the quota has `limits.memory`, a Pod without a memory limit is rejected with `must specify limits.memory`, because the quota cannot count a value that is not there. That is why a ResourceQuota usually comes with a LimitRange that supplies defaults.
+
+```bash
+kubectl create quota team-quota --hard=pods=10,requests.cpu=2,requests.memory=4Gi
+kubectl describe quota team-quota
+```
+
+`describe quota` lists each resource with its Used and Hard values.
+
+## The manifests
+
+A Deployment with requests and limits on its container:
+
+<YamlWalkthrough id="resources-deployment" />
+
+A LimitRange that gives every container in the namespace a default and a ceiling:
+
+<YamlWalkthrough id="resources-limitrange" />
+
+A ResourceQuota that caps the namespace as a whole:
+
+<YamlWalkthrough id="resources-quota" />
+
+## Seeing usage and allocation
+
+`kubectl top` shows current usage:
+
+```bash
+kubectl top nodes
+kubectl top pods
+```
+
+```text
+NAME                     CPU(cores)   MEMORY(bytes)
+api-6c9f7d8b5d-4kxmp     3m           98Mi
+memhog-5f6b8c9d7-q2wzt   50m          601Mi
+```
+
+On a real cluster `kubectl top` needs **metrics-server** installed; without it you get `error: Metrics API not available`. The numbers are recent samples, not peaks.
+
+`kubectl describe node` shows what the scheduler sees: every Pod on the node with its requests and limits, and the totals against allocatable.
+
+```text
+Allocated resources:
+  (Total limits may be over 100 percent, i.e., overcommitted.)
+  Resource           Requests      Limits
+  --------           --------      ------
+  cpu                1100m (55%)   1500m (75%)
+  memory             3328Mi (81%)  4352Mi (106%)
+```
+
+Compare the two. Requests far above usage waste capacity that no other Pod can claim. Usage close to or above the memory limit means an OOM kill is coming.
+
+## Right-sizing
+
+- **Measure first.** Watch real usage under real load (`kubectl top`, or your monitoring over days, including peaks) before picking numbers.
+- **Memory: request what it uses, limit with headroom, or set them equal.** Memory cannot be throttled, so a container over its request is an eviction candidate and one over its limit is killed. Setting request equal to limit makes memory behaviour predictable.
+- **CPU: always set a request.** It decides placement and the share of CPU each container gets when the node is busy. A CPU limit caps bursts even when the node is idle and causes throttling, so many teams set CPU requests without CPU limits for latency-sensitive services.
+- **Do not inflate requests "to be safe".** Every unused requested byte is capacity the scheduler will not give to anyone else, and it is how Pods end up `Pending` on nodes that are mostly idle.
+- **Revisit after changes.** A new version, more traffic, or a bigger cache all change the right numbers.
+
+## Common mistakes
+
+<Callout title="Common mistake: confusing Mi with M, or m with Mi">
+  `memory: 512m` is half a byte, not 512 megabytes. Use `Mi` or `Gi` for memory and keep `m` for CPU.
+</Callout>
+
+<Callout title="Common mistake: a memory limit below the app's working set">
+  The container starts, grows, and is killed with exit code 137 over and over. Look at `Last State` in `kubectl describe
+  pod`, then raise the limit to what the app really needs, or fix the app.
+</Callout>
+
+<Callout title="Common mistake: reading Pending as a cluster problem">
+  A Pod that is `Pending` with `Insufficient memory` or `Insufficient cpu` usually asks for more than any node has left.
+  Check its requests against `kubectl describe node` before adding nodes.
+</Callout>
+
+<Callout title="Common mistake: adding a quota without defaults">
+  As soon as a ResourceQuota covers `requests.cpu` or `limits.memory`, every Pod without those values is rejected,
+  including Pods from existing Deployments when they are next recreated. Add a LimitRange with defaults, or set the values
+  on every workload, before the quota.
+</Callout>
+
+## Practice
+
+Two Deployments were applied from `apps.yaml`. One api replica stays `Pending`, and the memhog Pod keeps getting killed. Find out why with `kubectl describe`, `kubectl top`, and `kubectl describe node`, then fix both in `apps.yaml` and apply it.
+
+<Lab id="resources-fix-requests-limits" />
+
+## Check yourself
+
+<Quiz id="resources" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).

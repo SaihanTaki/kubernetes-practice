@@ -23,24 +23,28 @@ Here are the objects you will meet most often. Do not try to memorise them now. 
 | `Pod` | One or more containers that run together on one node | `v1` | yes | [Pods](/chapters/pods) |
 | `ReplicaSet` | Keeps a fixed number of identical Pods running | `apps/v1` | yes | [ReplicaSets](/chapters/replicasets) |
 | `Deployment` | Manages ReplicaSets to scale an app and roll out new versions | `apps/v1` | yes | [Deployments](/chapters/deployments) |
-| `StatefulSet` | Runs Pods with stable names and their own storage, for databases | `apps/v1` | yes | later |
-| `DaemonSet` | Runs one Pod on every node, for agents such as log collectors | `apps/v1` | yes | later |
-| `Job` | Runs Pods until a task finishes successfully | `batch/v1` | yes | later |
-| `CronJob` | Creates a Job on a schedule | `batch/v1` | yes | later |
-| `Service` | A stable name and IP that sends traffic to Pods chosen by label | `v1` | yes | later |
-| `Ingress` | Routes HTTP traffic from outside the cluster to Services by host and path | `networking.k8s.io/v1` | yes | later |
-| `ConfigMap` | Configuration that Pods read as environment variables or files | `v1` | yes | later |
-| `Secret` | Passwords, tokens, and keys, given to Pods the same way | `v1` | yes | later |
-| `PersistentVolumeClaim` | A request for storage of a given size, used by Pods | `v1` | yes | later |
-| `PersistentVolume` | A piece of storage that a claim binds to | `v1` | no | later |
-| `StorageClass` | A type of storage, so volumes can be created on demand | `storage.k8s.io/v1` | no | later |
+| `StatefulSet` | Runs Pods with stable names and their own storage, for databases | `apps/v1` | yes | [DaemonSets and StatefulSets](/chapters/daemonsets-statefulsets) |
+| `DaemonSet` | Runs one Pod on every node, for agents such as log collectors | `apps/v1` | yes | [DaemonSets and StatefulSets](/chapters/daemonsets-statefulsets) |
+| `Job` | Runs Pods until a task finishes successfully | `batch/v1` | yes | [Jobs and CronJobs](/chapters/jobs) |
+| `CronJob` | Creates a Job on a schedule | `batch/v1` | yes | [Jobs and CronJobs](/chapters/jobs) |
+| `Service` | A stable name and IP that sends traffic to Pods chosen by label | `v1` | yes | [Services](/chapters/services) |
+| `Ingress` | Routes HTTP traffic from outside the cluster to Services by host and path | `networking.k8s.io/v1` | yes | [Ingress](/chapters/ingress) |
+| `ConfigMap` | Configuration that Pods read as environment variables or files | `v1` | yes | [ConfigMaps and Secrets](/chapters/config) |
+| `Secret` | Passwords, tokens, and keys, given to Pods the same way | `v1` | yes | [ConfigMaps and Secrets](/chapters/config) |
+| `PersistentVolumeClaim` | A request for storage of a given size, used by Pods | `v1` | yes | [Volumes](/chapters/volumes) |
+| `PersistentVolume` | A piece of storage that a claim binds to | `v1` | no | [Volumes](/chapters/volumes) |
+| `StorageClass` | A type of storage, so volumes can be created on demand | `storage.k8s.io/v1` | no | [Volumes](/chapters/volumes) |
 | `Namespace` | Divides one cluster into separate groups of names | `v1` | no | [Namespaces](/chapters/namespaces) |
-| `Node` | A machine that runs Pods | `v1` | no | later |
-| `ServiceAccount` | An identity for processes in a Pod that call the API | `v1` | yes | later |
-| `Role` | A set of permissions inside one namespace | `rbac.authorization.k8s.io/v1` | yes | later |
-| `RoleBinding` | Grants a Role to users, groups, or ServiceAccounts in a namespace | `rbac.authorization.k8s.io/v1` | yes | later |
-| `ClusterRole` | A set of permissions that applies across the cluster | `rbac.authorization.k8s.io/v1` | no | later |
-| `HorizontalPodAutoscaler` | Changes a workload's replica count based on metrics such as CPU | `autoscaling/v2` | yes | later |
+| `Node` | A machine that runs Pods | `v1` | no | [Architecture](/chapters/architecture), [Scheduling](/chapters/scheduling) |
+| `ServiceAccount` | An identity for processes in a Pod that call the API | `v1` | yes | [RBAC](/chapters/rbac) |
+| `Role` | A set of permissions inside one namespace | `rbac.authorization.k8s.io/v1` | yes | [RBAC](/chapters/rbac) |
+| `RoleBinding` | Grants a Role to users, groups, or ServiceAccounts in a namespace | `rbac.authorization.k8s.io/v1` | yes | [RBAC](/chapters/rbac) |
+| `ClusterRole` | A set of permissions that applies across the cluster | `rbac.authorization.k8s.io/v1` | no | [RBAC](/chapters/rbac) |
+| `NetworkPolicy` | Allows or blocks traffic between Pods | `networking.k8s.io/v1` | yes | [Network Policies](/chapters/network-policies) |
+| `ResourceQuota` | Caps the total CPU, memory, and object count in a namespace | `v1` | yes | [Resource Requests and Limits](/chapters/resources) |
+| `LimitRange` | Sets default and allowed requests and limits per container | `v1` | yes | [Resource Requests and Limits](/chapters/resources) |
+| `ClusterRoleBinding` | Grants a ClusterRole across the whole cluster | `rbac.authorization.k8s.io/v1` | no | [RBAC](/chapters/rbac) |
+| `HorizontalPodAutoscaler` | Changes a workload's replica count based on metrics such as CPU | `autoscaling/v2` | yes | not covered yet |
 
 **Namespaced** objects live inside a namespace, so two teams can each have a Deployment called `web`. Cluster-scoped objects, such as Nodes and Namespaces themselves, have one name across the whole cluster.
 

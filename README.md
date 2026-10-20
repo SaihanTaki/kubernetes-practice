@@ -55,14 +55,22 @@ The workflow sets `BASE_PATH=/<repo>` so assets and links get that prefix. Build
 
 ## Simulator
 
-The terminal is a simulated `kubectl`; input is never executed. Type `kubectl help` in any lab for the full list. It models Pods, ReplicaSets, Deployments, Services, ConfigMaps, Secrets, and Namespaces, including `apply -f`, labels and annotations, rolling updates and rollbacks, and readiness/liveness/startup probes.
+The terminal is a simulated `kubectl`; input is never executed. Type `kubectl help` in any lab for the full list. It models a three-node cluster (one control plane, two workers) with:
+
+- Workloads: Pods, ReplicaSets, Deployments (rolling updates, rollbacks), Jobs, CronJobs, DaemonSets, StatefulSets.
+- Networking: Services and endpoints, Ingress (try `curl http://<host>/`), NetworkPolicy, and `kubectl exec <pod> -- wget|curl|nslookup` inside the cluster.
+- Configuration: ConfigMaps, Secrets, probes, requests and limits, LimitRange, ResourceQuota.
+- Storage: StorageClasses, PersistentVolumes, PersistentVolumeClaims, Pod volumes, files written with `exec`.
+- Scheduling: node labels, nodeSelector, affinity, taints and tolerations, cordon and drain.
+- Access: ServiceAccounts, Roles, bindings, `--as`, and `kubectl auth can-i`.
+- Debugging: `logs`, `get events`, `describe`, `top`.
 
 Known limits, on purpose:
 
-- No `logs`, `exec`, `edit`, `port-forward`, volumes, or `revisionHistoryLimit`.
-- New Pods show `ContainerCreating` for one command; a rolling update moves one step per command.
+- Time moves 5 seconds per command. New Pods show `ContainerCreating` for one command; rollouts and StatefulSets move one step per command.
+- `exec` runs only `cat`, `ls`, `echo`, `env`, `printenv`, `wget`, `curl`, `nslookup`, and `hostname`. No `edit`, `port-forward`, or `attach`.
 - `kubectl rollout status` on a stuck rollout fails at once instead of after the progress deadline.
-- Pods are spread over two fake worker nodes. There is no real scheduling.
+- No `revisionHistoryLimit`, StatefulSet partitions, Job back-off delays, or NetworkPolicy `endPort`. PersistentVolumes can only use `hostPath`.
 - At most 20 replicas per workload.
 - Output follows real `kubectl` formatting but is not identical in every detail.
 

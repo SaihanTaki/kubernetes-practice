@@ -2,6 +2,10 @@ import { describe, expect, it } from "vitest";
 import { parse as parseYaml } from "yaml";
 import { createCluster, find, list, replicaSetsOf, run, type Cluster, type Fixture } from "@/lib/simulator";
 
+/** Resources besides the built-in default StorageClass. */
+/** Objects created by commands; built-in ones (StorageClass, IngressClass, RBAC, default ServiceAccounts) have named uids. */
+const added = (c: Cluster) => c.resources.filter((r) => /^\d+$/.test(r.metadata.uid));
+
 const web = (extra: Fixture = {}) =>
   createCluster({ deployments: [{ name: "web", replicas: 2, image: "nginx:1.27", labels: { app: "web" } }], ...extra });
 
@@ -174,13 +178,13 @@ describe("dry run", () => {
   it("reports a dry-run create for run and apply", () => {
     const r = exec(createCluster(), "kubectl run solo --image=busybox --dry-run=client");
     expect(r.output).toBe("pod/solo created (dry run)");
-    expect(r.c.resources).toHaveLength(0);
+    expect(added(r.c)).toHaveLength(0);
     const yaml = parseYaml(exec(createCluster(), "kubectl run solo --image=busybox --dry-run=client -o yaml").output);
     expect(yaml.spec.nodeName).toBeUndefined();
     expect(yaml.metadata.ownerReferences).toBeUndefined();
     const applied = exec(createCluster({ files: { "a.yaml": deployment("api", "nginx") } }), "kubectl apply -f a.yaml --dry-run=client");
     expect(applied.output).toBe("deployment.apps/api created (dry run)");
-    expect(applied.c.resources).toHaveLength(0);
+    expect(added(applied.c)).toHaveLength(0);
   });
 
   it("is limited to create, run and apply", () => {
@@ -235,16 +239,16 @@ describe("apply", () => {
     const syntax = exec(files(`${deployment("api", "nginx")}---\nkind: [unclosed\n`), "kubectl apply -f app.yaml");
     expect(syntax.error).toBe(true);
     expect(syntax.output).toMatch(/^error: error parsing app\.yaml: /);
-    expect(syntax.c.resources).toHaveLength(0);
+    expect(added(syntax.c)).toHaveLength(0);
 
     const missingNs = exec(files(`${deployment("api", "nginx")}---\n${deployment("b", "nginx", 1, "nope")}`), "kubectl apply -f app.yaml");
     expect(missingNs.error).toBe(true);
-    expect(missingNs.c.resources).toHaveLength(0);
+    expect(added(missingNs.c)).toHaveLength(0);
   });
 
   it("reports missing files and unknown kinds", () => {
     expect(exec(createCluster(), "kubectl apply -f x.yaml").output).toBe('error: the path "x.yaml" does not exist');
-    expect(exec(files("apiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: x\n"), "kubectl apply -f app.yaml").output).toMatch(/^error: app\.yaml: kind: /);
+    expect(exec(files("apiVersion: apps/v1\nkind: HorizontalPodAutoscaler\nmetadata:\n  name: x\n"), "kubectl apply -f app.yaml").output).toMatch(/^error: app\.yaml: kind: /);
     expect(exec(files(""), "kubectl apply -f app.yaml").error).toBe(true);
     expect(exec(createCluster(), "kubectl apply").error).toBe(true);
   });
@@ -271,8 +275,8 @@ describe("delete -f", () => {
     const text = `${deployment("web", "nginx")}---\n${deployment("gone", "nginx")}`;
     const r = exec(web({ files: { "app.yaml": text } }), "kubectl delete -f app.yaml");
     expect(r.error).toBe(true);
-    expect(r.output).toBe('deployment.apps "web" deleted\nError from server (NotFound): deployments "gone" not found');
-    expect(r.c.resources).toHaveLength(0);
+    expect(r.output).toBe('deployment.apps "web" deleted\nError from server (NotFound): deployments.apps "gone" not found');
+    expect(added(r.c)).toHaveLength(0);
   });
 
   it("deletes namespaces listed in a file", () => {

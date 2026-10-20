@@ -1,0 +1,177 @@
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## One entry point for many Services
+
+In [Services](/chapters/services) you exposed an app outside the cluster with a NodePort or LoadBalancer Service. That works for one app. With twenty it stops working well:
+
+- **LoadBalancer per Service**: every Service gets its own cloud load balancer and public IP. You pay for each, and each needs its own DNS record and certificate.
+- **NodePort per Service**: users would need URLs like `http://203.0.113.5:31234`, a different high port per app, and node IPs that change when nodes are replaced.
+- **No HTTP awareness**: both work at the TCP level. Neither can send `/api` to one app and `/` to another, or serve two websites on one IP.
+
+An **Ingress** describes HTTP and HTTPS routing: which host name and URL path goes to which Service. One entry point, usually a single LoadBalancer Service, sits in front of all your apps and picks the backend for each request.
+
+## The resource and the controller
+
+There are two parts, and beginners often expect one to do the job of both:
+
+- The **Ingress resource** is an object you write in YAML. It holds rules and nothing else.
+- The **Ingress controller** is a reverse proxy (ingress-nginx, Traefik, HAProxy, Envoy-based ones, or a cloud provider's load balancer controller) that runs in the cluster, watches Ingress objects, and turns their rules into proxy configuration.
+
+Kubernetes does not ship a controller. The API server accepts and stores an Ingress without one, `kubectl get ingress` shows an empty `ADDRESS`, and no traffic is routed. Installing a controller is a separate step, usually done once per cluster by whoever runs it.
+
+Follow a request from a browser to a Pod. Select a box for details or step through it.
+
+<Diagram id="ingress-request-path" />
+
+DNS is outside Kubernetes. You create a record for each host name that points at the controller's external address. Every host on every Ingress handled by that controller shares the address.
+
+### IngressClass and ingressClassName
+
+A cluster can run more than one controller. An **IngressClass** names one of them:
+
+```yaml
+apiVersion: networking.k8s.io/v1
+kind: IngressClass
+metadata:
+  name: nginx
+  annotations:
+    ingressclass.kubernetes.io/is-default-class: "true"
+spec:
+  controller: k8s.io/ingress-nginx
+```
+
+Controller installs usually create their IngressClass for you. An Ingress picks a class with `spec.ingressClassName: nginx`. If it leaves the field out, it gets the class marked as default. If there is no default class, no controller may pick it up.
+
+```bash
+kubectl get ingressclass
+```
+
+<Callout title="Common mistake: the old class annotation">
+  Older guides set `kubernetes.io/ingress.class: nginx` as an annotation. That annotation is deprecated. Use
+  `spec.ingressClassName`.
+</Callout>
+
+## Routing by host and path
+
+Each entry in `spec.rules` has an optional `host` and a list of `paths`. The controller compares the request's `Host` header (or the TLS SNI name for HTTPS) with `host`, then compares the URL path with the paths under that host.
+
+- A rule with no `host` matches every host name.
+- `host: "*.example.com"` matches exactly one extra DNS label: `shop.example.com`, but not `example.com` or `a.b.example.com`.
+- When several paths match, the **longest** one wins. Order in the file does not matter.
+
+Here is one Ingress with two hosts. Step through four requests to see where each lands.
+
+<Diagram id="ingress-routing-table" />
+
+### pathType
+
+Every path in `networking.k8s.io/v1` needs a `pathType`. There is no default.
+
+| pathType | Rule path | Matches | Does not match |
+| --- | --- | --- | --- |
+| `Prefix` | `/api` | `/api`, `/api/`, `/api/orders` | `/apis`, `/ap` |
+| `Prefix` | `/` | every path | |
+| `Exact` | `/login` | `/login` | `/login/`, `/login/reset`, `/Login` |
+| `ImplementationSpecific` | `/api` | up to the controller | |
+
+`Prefix` compares whole segments split by `/`, so `/api` never matches `/apis`. A trailing slash is ignored for `Prefix` but not for `Exact`. If an `Exact` and a `Prefix` path are equally long and both match, `Exact` wins.
+
+`ImplementationSpecific` leaves matching to the controller. ingress-nginx treats it like `Prefix`, or as a regular expression when regex matching is turned on. Use `Prefix` or `Exact` unless you need a controller feature.
+
+### defaultBackend
+
+`spec.defaultBackend` names a Service for requests that no rule matches: unknown hosts, or paths no rule covers. Without it the controller answers with its own default, which for ingress-nginx is `404 Not Found`.
+
+## TLS
+
+The controller can terminate HTTPS. Put the certificate and key in a Secret of type `kubernetes.io/tls`, in the same namespace as the Ingress (Secrets are covered in [ConfigMaps and Secrets](/chapters/config)):
+
+```bash
+kubectl create secret tls shop-tls --cert=shop.crt --key=shop.key
+```
+
+Then list the hosts it covers under `spec.tls`. The controller serves the certificate on port 443 and sends plain HTTP to the Pods. A host that is not listed, or a Secret that does not exist, gets the controller's self-signed default certificate, which browsers and `curl` without `-k` reject. Many controllers, ingress-nginx included, also redirect HTTP to HTTPS once a host has TLS.
+
+The certificate itself must cover the host names. Tools such as cert-manager can request and renew certificates and write them into the Secret for you.
+
+## The Ingress manifest
+
+A complete Ingress with two hosts, three paths, TLS, and a default backend. Numbered lines are explained alongside.
+
+<YamlWalkthrough id="ingress-shop" />
+
+Check what the controller made of it with `describe`. Each path lists its Service and the Pod endpoints behind it, or an error if the Service is missing:
+
+```text
+$ kubectl describe ingress shop
+Rules:
+  Host               Path    Backends
+  ----               ----    --------
+  shop.example.com
+                     /api    shop-api:80 (10.244.1.7:8080,10.244.2.4:8080)
+                     /       shop-web:http (10.244.1.5:80,10.244.2.3:80)
+  admin.example.com
+                     /login  admin:8080 (<error: services "admin" not found>)
+```
+
+<Callout title="Common mistake: a typo in the Service name">
+  The API server does not check that a backend Service exists. A wrong name applies without error, and requests
+  to that path get `503 Service Temporarily Unavailable` from the controller. `kubectl describe ingress` shows
+  the error next to the path.
+</Callout>
+
+<Callout title="Common mistake: targetPort in the backend">
+  `backend.service.port` is the Service's `port`, not the container port. If the Service maps 80 to 8080, the
+  Ingress uses 80.
+</Callout>
+
+## Annotations are controller-specific
+
+The Ingress spec covers hosts, paths, TLS, and a default backend. Everything else, such as rewrites, timeouts, body size limits, or rate limits, is set with annotations that only one controller understands. This example is for **ingress-nginx only**:
+
+```yaml
+metadata:
+  annotations:
+    nginx.ingress.kubernetes.io/rewrite-target: /$2
+spec:
+  ingressClassName: nginx
+  rules:
+    - host: shop.example.com
+      http:
+        paths:
+          - path: /api(/|$)(.*)
+            pathType: ImplementationSpecific
+            backend:
+              service:
+                name: shop-api
+                port:
+                  number: 80
+```
+
+It strips `/api` before forwarding, so `/api/orders` reaches the Pod as `/orders`. With `rewrite-target`, ingress-nginx treats the path as a regular expression, and `$2` is the second capture group. Traefik, HAProxy, or a cloud controller ignore this annotation and have their own way to do the same thing. When you change controllers, expect to rewrite annotations.
+
+## Gateway API, the successor
+
+The Ingress API is **frozen**: it is stable, supported, and not deprecated, but it gets no new features. New work goes into **Gateway API** (`gateway.networking.k8s.io`), which splits the job by role:
+
+- **GatewayClass**: which controller implements gateways, like IngressClass.
+- **Gateway**: a listener with ports, protocols, and certificates, usually owned by the platform team.
+- **HTTPRoute**: host and path matching to Services, usually owned by app teams. It can also match headers and split traffic by weight without annotations.
+
+Ingress is still common and fine for host and path routing. Look at Gateway API when you need features that would otherwise be controller annotations. Note that the ingress-nginx project itself was retired by the Kubernetes maintainers in March 2026, so new clusters should pick another controller or a Gateway API implementation.
+
+## Practice
+
+An Ingress returns 404 for the storefront and 503 for the API. Find both problems with `kubectl describe ingress` and `curl`, fix `ingress.yaml`, and apply it. In this simulator, host names in Ingress rules resolve to the controller at `192.0.2.10`, and `curl` runs as if from your laptop.
+
+<Lab id="ingress-fix-routing" />
+
+## Check yourself
+
+<Quiz id="ingress" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).

@@ -1,0 +1,176 @@
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## What the scheduler does
+
+When a Pod is created, its `spec.nodeName` is empty. The kube-scheduler watches for such Pods and picks a node for each one in three steps:
+
+1. **Filter.** Drop every node that cannot run the Pod: it is cordoned, it has a taint the Pod does not tolerate, its labels do not match the Pod's `nodeSelector` or required affinity, or it lacks the free CPU and memory the Pod requests.
+2. **Score.** Rank the nodes that are left. Preferred affinity, spreading, and how full each node is all add points.
+3. **Bind.** Write the winning node's name into `spec.nodeName`. The kubelet on that node sees the Pod and starts its containers.
+
+The scheduler never starts containers and never moves a running Pod. Step through one Pod on the three-node cluster used in the labs.
+
+<Diagram id="scheduling-pipeline" />
+
+If no node survives the filter, the Pod stays `Pending` with node `<none>`. The scheduler records the reasons in a `FailedScheduling` event and tries again whenever something in the cluster changes.
+
+If you set `spec.nodeName` yourself, the scheduler is skipped entirely and the kubelet on that node runs the Pod, even past taints. Leave it to the scheduler unless you are debugging.
+
+## Node labels
+
+Nodes carry labels like any other object. Some are set for you and are the same in every cluster:
+
+| Label | Example value |
+| --- | --- |
+| `kubernetes.io/hostname` | `worker-1` |
+| `kubernetes.io/os` | `linux` |
+| `kubernetes.io/arch` | `amd64` |
+| `topology.kubernetes.io/zone` | `zone-a` |
+| `topology.kubernetes.io/region` | `eu-west-1` |
+| `node.kubernetes.io/instance-type` | `m5.large` |
+
+The zone and region labels come from the cloud provider or your installer. Add your own labels for hardware or purpose:
+
+```bash
+kubectl get nodes --show-labels
+kubectl label node worker-2 disk=ssd
+kubectl label node worker-2 disk-          # remove it
+```
+
+## nodeSelector
+
+The simplest rule: a map of labels the node must have. Every key must match.
+
+```yaml
+spec:
+  nodeSelector:
+    disk: ssd
+```
+
+In a Deployment it goes in the Pod template, `spec.template.spec.nodeSelector`. If no node has `disk=ssd`, every replica stays Pending until you label one.
+
+## Node affinity
+
+Node affinity does the same job with more control. It lives under `spec.affinity.nodeAffinity` and comes in two forms:
+
+- `requiredDuringSchedulingIgnoredDuringExecution`: a filter. Nodes that do not match are out.
+- `preferredDuringSchedulingIgnoredDuringExecution`: a score. Each term has a `weight` from 1 to 100 that is added to matching nodes. It never stops a Pod from scheduling.
+
+Rules use `matchExpressions` with the operators `In`, `NotIn`, `Exists`, `DoesNotExist`, `Gt`, and `Lt`. `NotIn` and `DoesNotExist` keep Pods away from nodes. In the required form, the entries in `nodeSelectorTerms` are ORed and the expressions inside one term are ANDed. If a Pod has both `nodeSelector` and required node affinity, the node must satisfy both.
+
+`IgnoredDuringExecution` is the part people miss: the rules are only checked when the Pod is scheduled.
+
+<Callout title="Common mistake: expecting Pods to move when labels change">
+  Removing `disk=ssd` from a node does not evict the Pods that were placed there because of it. They keep running until
+  they are deleted or the node goes away. Only new Pods see the new labels.
+</Callout>
+
+## Pod affinity and anti-affinity
+
+Node affinity looks at the node's labels. Pod affinity looks at which Pods already run nearby. "Nearby" is defined by `topologyKey`, the name of a node label: all nodes with the same value of that label form one domain.
+
+- `topologyKey: kubernetes.io/hostname`: each node is its own domain.
+- `topologyKey: topology.kubernetes.io/zone`: each zone is one domain.
+
+`podAffinity` puts a Pod in a domain that already runs Pods matching its `labelSelector`, for example a cache next to its app. `podAntiAffinity` keeps it out of such domains. The common use is spreading replicas of one Deployment: give each Pod anti-affinity against its own label.
+
+```yaml
+affinity:
+  podAntiAffinity:
+    requiredDuringSchedulingIgnoredDuringExecution:
+      - labelSelector:
+          matchLabels:
+            app: api
+        topologyKey: kubernetes.io/hostname
+```
+
+With the required form, at most one `api` Pod runs per node. A third replica on a two-worker cluster stays Pending. Use the preferred form (with a `weight` and a `podAffinityTerm`) if spreading should never block a rollout.
+
+## Topology spread constraints
+
+`topologySpreadConstraints` in the Pod spec is the more direct tool for even spreading. Each constraint names a `topologyKey`, a `labelSelector` for the Pods to count, and a `maxSkew`: the largest allowed difference between the domain with the most matching Pods and the one with the fewest. With `maxSkew: 1` over zones and Pods at zone-a 2, zone-b 1, the next Pod can only go to zone-b. `whenUnsatisfiable: DoNotSchedule` makes the constraint a filter; `ScheduleAnyway` turns it into a scoring preference. Unlike required anti-affinity, it allows more than one Pod per domain, so it scales past the number of nodes or zones.
+
+## Taints and tolerations
+
+Affinity is the Pod choosing nodes. A taint is the node pushing Pods away. A taint has a key, an optional value, and an effect:
+
+| Effect | New Pods without a toleration | Running Pods without a toleration |
+| --- | --- | --- |
+| `NoSchedule` | not scheduled here | stay |
+| `PreferNoSchedule` | avoided if another node fits | stay |
+| `NoExecute` | not scheduled here | evicted |
+
+```bash
+kubectl taint nodes worker-1 dedicated=batch:NoSchedule
+kubectl taint nodes worker-1 dedicated=batch:NoSchedule-   # remove it
+```
+
+The control plane node in most clusters carries `node-role.kubernetes.io/control-plane:NoSchedule`, which is why your Pods never land there. Kubernetes also adds NoExecute taints such as `node.kubernetes.io/unreachable` to nodes that stop responding, and every Pod gets a default toleration for those with `tolerationSeconds: 300`: it is evicted after five minutes on a dead node.
+
+A toleration in the Pod spec matches a taint by key, effect, and either `operator: Equal` with the same value or `operator: Exists` with no value. A toleration with an empty effect matches every effect of that key.
+
+<Callout title="Common mistake: using a toleration to send Pods to a node">
+  A toleration only lets a Pod onto a tainted node. The scheduler is free to put it on any untainted node instead. To
+  dedicate nodes to a workload, taint them to keep others off, label them, and give the workload both a toleration and
+  required node affinity for that label.
+</Callout>
+
+<Diagram id="scheduling-dedicated" />
+
+## The manifest
+
+This Deployment uses all three tools: required and preferred node affinity, anti-affinity to keep replicas on separate nodes, and a toleration for nodes reserved with `dedicated=api:NoSchedule`.
+
+<YamlWalkthrough id="scheduling-api" />
+
+## Cordon and drain
+
+To take a node out for maintenance:
+
+```bash
+kubectl cordon worker-2                       # no new Pods; running ones stay
+kubectl drain worker-2 --ignore-daemonsets    # cordon, then evict every Pod
+kubectl uncordon worker-2                     # accept Pods again
+```
+
+A cordoned node shows `Ready,SchedulingDisabled` in `kubectl get nodes`. `drain` evicts Pods through the Eviction API, so PodDisruptionBudgets are respected. It stops with an error when the node has:
+
+- DaemonSet Pods: pass `--ignore-daemonsets`. They are left alone, because their controller would put them straight back.
+- Pods with no controller: pass `--force`. They are deleted and nothing recreates them.
+- Pods using `emptyDir`: pass `--delete-emptydir-data`. That data is lost.
+
+Evicted Pods are recreated by their controllers and scheduled elsewhere, if there is anywhere they fit. After `uncordon`, existing Pods do not move back; only new and Pending Pods use the node.
+
+## Reading FailedScheduling
+
+`kubectl describe pod` on a Pending Pod shows the reason in its events:
+
+```text
+Warning  FailedScheduling  default-scheduler  0/3 nodes are available: 1 node(s) had untolerated taint {node-role.kubernetes.io/control-plane: }, 2 node(s) didn't match Pod's node affinity/selector. preemption: 0/3 nodes are available: 3 Preemption is not helpful for scheduling.
+```
+
+The message counts nodes per reason. Read it as a list of what each node failed:
+
+- `didn't match Pod's node affinity/selector`: check `nodeSelector` and required node affinity against `kubectl get nodes --show-labels`.
+- `had untolerated taint {key: value}`: the node has a taint the Pod does not tolerate.
+- `didn't match pod anti-affinity rules`: a matching Pod already runs in that domain.
+- `Insufficient cpu` / `Insufficient memory`: the Pod's requests do not fit what is left on the node.
+- `node(s) were unschedulable`: the node is cordoned.
+
+`kubectl get events --field-selector involvedObject.name=<pod>` shows the same events.
+
+## Practice
+
+Label a node so a Pending Deployment can run, reserve another node with a taint, then drain and restore the first one. Watch the NODE column in `kubectl get pods -o wide`.
+
+<Lab id="scheduling-place-pods" />
+
+## Check yourself
+
+<Quiz id="scheduling" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet). Resource requests, which feed the `Insufficient` filter, are covered in [Resources](/chapters/resources).

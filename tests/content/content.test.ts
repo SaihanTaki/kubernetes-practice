@@ -1,4 +1,4 @@
-import { existsSync, readdirSync } from "node:fs";
+import { existsSync, readdirSync, readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { chapters, diagrams, labs, manifests, quizzes } from "@/content/chapters";
@@ -15,6 +15,15 @@ describe("chapters", () => {
     const files = readdirSync("content/chapters").filter((f) => f.endsWith(".mdx")).map((f) => f.slice(0, -4));
     unique(chapters.map((c) => c.slug));
     expect(chapters.map((c) => c.slug).sort()).toEqual(files.sort());
+  });
+
+  it("links only to registered chapters", () => {
+    const slugs = chapters.map((c) => c.slug);
+    for (const f of readdirSync("content/chapters").filter((f) => f.endsWith(".mdx"))) {
+      for (const [, slug] of readFileSync(`content/chapters/${f}`, "utf8").matchAll(/\]\(\/chapters\/([a-z0-9-]+)/g)) {
+        expect(slugs, `${f} links to /chapters/${slug}`).toContain(slug);
+      }
+    }
   });
 
   it.each(chapters.filter((c) => c.ready))("$slug has content, objectives, and a YAML question", (c) => {

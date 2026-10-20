@@ -59,7 +59,7 @@ describe("label and annotate", () => {
   });
 
   it("validates keys and values", () => {
-    for (const bad of ["kubectl label pod a Bad_=x", "kubectl label pod a k=has space", "kubectl label pod a 'k=has space'", "kubectl label pod a k=-x", "kubectl label pod a", "kubectl label pod a k", "kubectl label ns default a=b", "kubectl label pod nope a=b"]) {
+    for (const bad of ["kubectl label pod a Bad_=x", "kubectl label pod a k=has space", "kubectl label pod a 'k=has space'", "kubectl label pod a k=-x", "kubectl label pod a", "kubectl label pod a k", "kubectl label pod nope a=b"]) {
       expect(exec(pods(), bad).error, bad).toBe(true);
     }
     expect(exec(pods(), `kubectl label pod a k=${"x".repeat(64)}`).error).toBe(true);
