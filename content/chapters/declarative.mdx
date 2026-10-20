@@ -1,0 +1,164 @@
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## Desired state in files
+
+With imperative commands you tell the cluster what to do: create this, scale that, change this image. With the declarative model you write down what should exist, in a manifest file, and run one command that makes the cluster match:
+
+```bash
+kubectl apply -f web.yaml
+```
+
+kubectl sends every object in the file to the API server. For each one, the server checks whether it already exists and how it differs from the file, then creates it, updates the fields that changed, or leaves it alone. Step through the diagram to follow one file through apply.
+
+<Diagram id="declarative-apply-loop" />
+
+The output has one line per object:
+
+```text
+deployment.apps/web created      # first apply, the object did not exist
+deployment.apps/web configured   # the file changed, the object was updated
+deployment.apps/web unchanged    # the object already matches the file
+```
+
+Because apply compares instead of blindly creating, it is **idempotent**: running it again with the same file changes nothing and prints `unchanged`. That is what lets you run the same command after every edit, in a script, or in a CI pipeline, without checking first whether the object exists. Compare `kubectl create deployment web`, which fails with `AlreadyExists` the second time.
+
+## YAML essentials for manifests
+
+A manifest is YAML, and most apply errors are YAML mistakes rather than Kubernetes ones. You need only a small part of the language.
+
+- **Indentation is structure.** Nested keys are indented under their parent, and every key at the same level must start in the same column. Use spaces. Two per level is the convention.
+- **Maps** are `key: value` pairs. A key with nothing after the colon starts a nested map, as `metadata:` does.
+- **Lists** are items that start with `- `. Each `-` is one item. In `containers:`, each item is itself a map, and its keys line up with the first key after the dash.
+- **Strings and numbers.** `replicas: 3` is a number. `replicas: "3"` is a string and the API server rejects it. The reverse also bites: a label or env value written as `1.10` or `true` is parsed as a number or boolean, so quote values that must stay strings, such as `version: "1.10"`.
+- **Several documents in one file** are separated by a line containing only `---`. apply processes them in order.
+
+Here is a file that creates a Namespace and a Deployment inside it in one apply:
+
+```yaml
+apiVersion: v1
+kind: Namespace
+metadata:
+  name: shop
+---
+apiVersion: apps/v1
+kind: Deployment
+metadata:
+  name: web
+  namespace: shop
+  labels:
+    app: web
+spec:
+  replicas: 2
+  selector:
+    matchLabels:
+      app: web
+  template:
+    metadata:
+      labels:
+        app: web
+    spec:
+      containers:
+        - name: nginx
+          image: nginx:1.27
+          ports:
+            - containerPort: 80
+```
+
+```text
+$ kubectl apply -f shop.yaml
+namespace/shop created
+deployment.apps/web created
+```
+
+The Namespace comes first so it exists by the time the Deployment that lives in it is created. Here are the two documents again with each line explained. The first is short:
+
+<YamlWalkthrough id="namespace-shop" />
+
+The second is the Deployment. Watch the indentation of the `containers` list on lines 18 to 22.
+
+<YamlWalkthrough id="deployment-shop" />
+
+<Callout title="Common mistake: tabs and uneven indentation">
+  YAML does not allow tabs for indentation, and apply fails with a parse error that points at the line. Uneven
+  spaces are worse because they can still parse: a key indented one level too far becomes a child of the key above
+  it, and the API server then reports an unknown or missing field somewhere else. Set your editor to insert spaces
+  in YAML files.
+</Callout>
+
+<Callout title="Common mistake: apiVersion and kind that do not belong together">
+  Every kind lives in one API group. `kind: Deployment` needs `apiVersion: apps/v1`; with `apiVersion: v1` a real
+  cluster answers `no matches for kind "Deployment" in version "v1"`. Pods, Namespaces, and Services are in the core
+  group, so their apiVersion is plain `v1`.
+</Callout>
+
+## Changing things by editing the file
+
+To change an applied object, edit the file and apply it again. Change `replicas: 2` to `replicas: 3`, apply, and the output says `configured`. Apply once more without editing and it says `unchanged`.
+
+<Diagram id="declarative-edit-reapply" />
+
+The same works for any field. Change `image: nginx:1.27` to `image: nginx:1.28` and apply: because the Pod template changed, the Deployment starts a rollout and replaces its Pods with a new ReplicaSet, as described in [Deployments](/chapters/deployments). In this simulator the switch is instant rather than gradual.
+
+Only the fields you changed are updated. kubectl records the file it last applied in an annotation on the object (`kubectl.kubernetes.io/last-applied-configuration`), so it can also tell when you removed a field from the file and remove it from the object.
+
+Before applying, you can see what would happen without changing anything:
+
+```bash
+kubectl apply -f web.yaml --dry-run=client          # prints "created (dry run)" and so on
+kubectl apply -f web.yaml --dry-run=client -o yaml  # prints the objects as they would be sent
+```
+
+<Callout title="Common mistake: a selector that does not match the template">
+  The labels in `spec.selector.matchLabels` must all appear in `spec.template.metadata.labels`. If they do not, the
+  API server rejects the file and nothing in it is applied. The selector also cannot be changed once the Deployment
+  exists, so fix the template labels, not the selector, and if you really need a new selector, delete and recreate the
+  Deployment.
+</Callout>
+
+## Deleting what a file created
+
+```bash
+kubectl delete -f shop.yaml
+```
+
+This deletes every object named in the file, and reports `NotFound` for any that are already gone. The file stays, so you can apply it again later and get the same objects back. Deleting the `shop` Namespace also deletes everything inside it.
+
+## Files in git
+
+Since the files are the desired state, keep them in a git repository next to the application code. You then get:
+
+- **History**: every change to the cluster has a commit with an author and a reason.
+- **Review**: a change to `replicas` or an image tag goes through a pull request like any other code.
+- **Rebuild**: a new cluster or a new environment is one `kubectl apply -f` of the same directory away. On a real cluster `-f` also accepts a directory and applies every manifest in it.
+- **Rollback**: reverting the commit and applying returns the objects to their old spec.
+
+On a real cluster, `kubectl diff -f web.yaml` shows what apply would change, as a diff between the live object and the file. It is a good last check before applying a reviewed change. The simulator does not support it.
+
+## Declarative or imperative
+
+[Imperative commands](/chapters/imperative) are faster for one-off work: trying something out, debugging, or generating a starting file with `--dry-run=client -o yaml`. Applied files are better for anything you want to keep: they are repeatable, reviewable, and describe the whole object rather than one change.
+
+The trouble starts when you mix them on the same object.
+
+<Callout title="Common mistake: drift between the file and the cluster">
+  You applied web.yaml with `replicas: 3`, then ran `kubectl scale deployment web --replicas=5` during an incident.
+  The file still says 3. The next `kubectl apply -f web.yaml`, perhaps from someone else or from CI, sets it back to 3
+  without warning. Once an object is managed by a file, make every change in the file, or copy any emergency change back
+  into it straight away.
+</Callout>
+
+## Practice
+
+The lab starts with a manifest that does not apply. Edit it in the Files panel, apply it, and scale it through the file.
+
+<Lab id="declarative-fix" />
+
+## Check yourself
+
+<Quiz id="declarative" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).
