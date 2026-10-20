@@ -1,0 +1,235 @@
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## Why configuration lives outside the image
+
+The same image should run in development, staging, and production. What changes between them is configuration: a log level, a database host, a feature flag, a password. If you bake those into the image, you rebuild for every environment, and every secret ends up in every registry that stores the image.
+
+Kubernetes gives you two objects to hold configuration separately from the image:
+
+- A **ConfigMap** holds non-sensitive settings as key-value pairs.
+- A **Secret** holds sensitive values: passwords, API tokens, TLS keys.
+
+Both are namespaced. A Pod can only use ConfigMaps and Secrets from its own namespace. Both are limited to 1 MiB of data, so they hold settings and small files, not datasets.
+
+## ConfigMaps
+
+A ConfigMap is a map of string keys to string values under `data`. A key can hold a single setting such as `LOG_LEVEL: info` or the full text of a config file.
+
+Create one imperatively in three ways:
+
+```bash
+# One key per --from-literal
+kubectl create configmap api-config --from-literal=LOG_LEVEL=info --from-literal=APP_MODE=production
+
+# One key per file: the file name becomes the key, the contents the value
+kubectl create configmap nginx-conf --from-file=nginx.conf
+
+# One key per line of a KEY=value file
+kubectl create configmap api-env --from-env-file=api.env
+```
+
+`--from-file=custom-key=nginx.conf` sets the key name yourself. `--from-env-file` reads each `KEY=value` line as its own key, which is different from `--from-file=api.env`, which stores the whole file under one key named `api.env`.
+
+## Using configuration in a Pod
+
+A container can receive a ConfigMap or Secret in two ways: as **environment variables** or as **files in a volume**. Select a box to see how each path works.
+
+<Diagram id="config-paths" />
+
+### As environment variables
+
+To set one variable from one key, use `valueFrom` with `configMapKeyRef` or `secretKeyRef`:
+
+```yaml
+env:
+  - name: LOG_LEVEL
+    valueFrom:
+      configMapKeyRef:
+        name: api-config
+        key: LOG_LEVEL
+  - name: DB_PASSWORD
+    valueFrom:
+      secretKeyRef:
+        name: api-db
+        key: DB_PASSWORD
+```
+
+The variable name and the key name do not have to match. To turn every key of an object into a variable at once, use `envFrom`:
+
+```yaml
+envFrom:
+  - configMapRef:
+      name: api-config
+  - secretRef:
+      name: api-db
+    prefix: DB_
+```
+
+Each key becomes a variable with the same name. `prefix` is prepended to every name from that source, so a Secret key `PASSWORD` becomes `DB_PASSWORD`. Keys that are not valid variable names (for example `nginx.conf`) are skipped. If the same name is set by `env` and `envFrom`, the `env` entry wins.
+
+### As files in a volume
+
+For config files, mount the ConfigMap as a volume. Each key becomes a file in the mount directory, and its value becomes the file contents:
+
+```yaml
+spec:
+  containers:
+    - name: nginx
+      image: nginx:1.27
+      volumeMounts:
+        - name: conf
+          mountPath: /etc/nginx/conf.d
+          readOnly: true
+  volumes:
+    - name: conf
+      configMap:
+        name: nginx-conf
+```
+
+A Secret volume looks the same with `secret: { secretName: tls-certs }` in place of `configMap`. The kubelet keeps Secret volumes in memory (tmpfs), so the values are not written to the node's disk. The simulator in this chapter does not model volumes, so the lab uses environment variables only.
+
+## What happens when you change a ConfigMap
+
+The two paths behave differently on update, and this catches people out. Step through the diagram.
+
+<Diagram id="config-update" />
+
+- **Volumes** are updated in place. The kubelet notices the change on its next sync and rewrites the files, which can take a minute or more. Your app still has to re-read the file to use the new value.
+- **Environment variables** never change. They are set once when the container starts. Running containers keep the old value until the Pod is replaced.
+- **subPath mounts** (a single file mounted with `subPath`) are copied when the container starts and never receive updates.
+
+To make a Deployment pick up a changed ConfigMap used as env, replace its Pods:
+
+```bash
+kubectl rollout restart deployment/api
+```
+
+<Callout title="Common mistake: expecting env vars to update">
+  Editing a ConfigMap does not restart anything. Pods that read it through `env` or `envFrom` keep the old values
+  until they are recreated, so half-finished changes can sit unnoticed for days. Restart the Deployment after the
+  change, or include the config in the Pod template (for example a version in a name or annotation) so a change
+  triggers a rollout.
+</Callout>
+
+### Immutable ConfigMaps and Secrets
+
+Set `immutable: true` at the top level of a ConfigMap or Secret to lock its contents. After that, the API server rejects any change to `data`, and you cannot set `immutable` back to `false`. To change the values you delete and recreate the object, usually under a new name such as `api-config-v2`, and point the Deployment at it, which starts a normal rollout.
+
+Immutable objects also lower load on the API server: kubelets stop watching them for changes, which matters in clusters with thousands of Pods.
+
+## Secrets
+
+A Secret has the same shape as a ConfigMap, with a `type` and values stored base64-encoded under `data`.
+
+```bash
+kubectl create secret generic api-db --from-literal=DB_PASSWORD='s3cr3t'
+kubectl get secret api-db -o yaml
+```
+
+```yaml
+apiVersion: v1
+kind: Secret
+metadata:
+  name: api-db
+type: Opaque
+data:
+  DB_PASSWORD: czNjcjN0
+```
+
+### Base64 is encoding, not encryption
+
+`czNjcjN0` is `s3cr3t` in base64. Anyone who can read the Secret can decode it with `base64 -d`. Base64 exists so that binary data such as keys and certificates fits in a YAML string, not to hide anything.
+
+What protects a Secret:
+
+- **RBAC.** Restrict `get`, `list`, and `watch` on `secrets`. `list` returns full values, not just names. Anyone who can create a Pod in a namespace can also mount any Secret in that namespace, so Pod creation rights count as Secret access.
+- **Encryption at rest.** By default the API server stores Secrets in etcd unencrypted. An `EncryptionConfiguration` on the API server (or a KMS provider) encrypts them before they reach etcd, which protects etcd backups and disk snapshots.
+- **Keeping them out of Git.** A Secret manifest in a repository is a plaintext password in a repository. Use a tool that encrypts it or syncs it from an external secret store.
+
+`describe secret` shows only key names and sizes, which is a convenience, not protection.
+
+<Callout title="Common mistake: treating base64 as a safeguard">
+  Pasting a Secret's YAML into a ticket or committing it to Git leaks the value, because decoding base64 takes
+  one command. Treat a Secret manifest exactly like the plaintext password it contains.
+</Callout>
+
+### data and stringData
+
+Writing base64 by hand is error prone, so a manifest can use `stringData` with plain values instead. The API server encodes them and stores them in `data`. If a key appears in both, the `stringData` value wins. `stringData` is write-only: when you read the Secret back, everything is under `data`.
+
+A common bug is to put a plain value under `data`. The API server rejects it if it is not valid base64, and if it happens to be valid base64 (`admin` is not, `test` is) the container receives the decoded garbage.
+
+### Secret types
+
+The `type` field tells Kubernetes and tools which keys to expect:
+
+| Type | Used for | Required keys |
+| --- | --- | --- |
+| `Opaque` | Anything. The default when `type` is omitted. | none |
+| `kubernetes.io/tls` | A TLS certificate and private key, for example for an Ingress. | `tls.crt`, `tls.key` |
+| `kubernetes.io/dockerconfigjson` | Registry credentials, referenced from `imagePullSecrets` so the kubelet can pull private images. | `.dockerconfigjson` |
+| `kubernetes.io/service-account-token` | A long-lived ServiceAccount token. | filled in by Kubernetes |
+
+Each has its own `create` command:
+
+```bash
+kubectl create secret tls web-tls --cert=tls.crt --key=tls.key
+kubectl create secret docker-registry regcred --docker-server=registry.example.com \
+  --docker-username=ci --docker-password='...'
+```
+
+Service account token Secrets are no longer created automatically for every ServiceAccount (since Kubernetes 1.24). Pods get short-lived tokens through a projected volume instead, and you create a token Secret only when you need a long-lived token for something outside the cluster.
+
+## Missing references and CreateContainerConfigError
+
+When a container's `env` or `envFrom` points at a ConfigMap, Secret, or key that does not exist, the kubelet cannot build the environment. The Pod is scheduled, but the container never starts:
+
+```text
+NAME                   READY   STATUS                       RESTARTS   AGE
+api-6d8f7c9b5d-4kx2p   0/1     CreateContainerConfigError   0          40s
+```
+
+`kubectl describe pod` shows the cause in its events, such as `configmap "api-config" not found` or `couldn't find key LOG_LEVEL in Secret default/api-db`. Create the missing object or key and the kubelet retries; no restart is needed. A missing volume source behaves differently: the Pod stays in `ContainerCreating` with a `FailedMount` event.
+
+If the setting is genuinely optional, say so:
+
+```yaml
+- name: FEATURE_FLAGS
+  valueFrom:
+    configMapKeyRef:
+      name: flags
+      key: FEATURE_FLAGS
+      optional: true
+```
+
+With `optional: true` a missing object or key means the variable is simply not set. `configMapRef`, `secretRef`, and volume sources accept `optional` too.
+
+## The manifests
+
+A ConfigMap with two settings:
+
+<YamlWalkthrough id="configmap" />
+
+A Secret written with `stringData`:
+
+<YamlWalkthrough id="secret" />
+
+A Deployment that reads both, one key at a time and in bulk:
+
+<YamlWalkthrough id="config-deployment" />
+
+## Practice
+
+The api Deployment is stuck in `CreateContainerConfigError`. Find out what it needs and create it.
+
+<Lab id="config-missing" />
+
+## Check yourself
+
+<Quiz id="config" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).

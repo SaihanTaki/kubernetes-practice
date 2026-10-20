@@ -9,6 +9,7 @@ import { data as replicasets } from "./chapters/replicasets.data";
 import { data as services } from "./chapters/services.data";
 import { data as labels } from "./chapters/labels.data";
 import { data as rollouts } from "./chapters/rollouts.data";
+import { data as config } from "./chapters/config.data";
 import type { ChapterData, Difficulty } from "./types";
 
 export type Chapter = {
@@ -122,6 +123,15 @@ export const chapters: Chapter[] = [
     difficulty: "intermediate",
     ready: true,
     data: rollouts,
+  },
+  {
+    slug: "config",
+    section: "Configuration",
+    title: "ConfigMaps and Secrets",
+    summary: "Keep settings and credentials out of the image and hand them to Pods as environment variables or files.",
+    difficulty: "beginner",
+    ready: true,
+    data: config,
   },
 ];
 
