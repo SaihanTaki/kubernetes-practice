@@ -365,4 +365,129 @@ export const quiz: QuizQuestion[] = [
     explanation:
       "The selector is immutable and must match the template. A new version would need a new selector, which the API server rejects. Keep version as a template label only.",
   },
+  {
+    id: "labels-show-columns",
+    topic: "kubectl label",
+    difficulty: "beginner",
+    question: "Which command lists Pods with all their labels in one LABELS column?",
+    options: [
+      { id: "a", text: "kubectl get pods -l all" },
+      { id: "b", text: "kubectl get pods --show-labels" },
+      { id: "c", text: "kubectl describe labels" },
+      { id: "d", text: "kubectl get labels" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "--show-labels adds a LABELS column with every label. -L tier,env instead adds one column per named key. -l filters, it does not display labels, and labels are not a resource you can get.",
+  },
+  {
+    id: "labels-template-must-match",
+    topic: "Selector YAML",
+    difficulty: "intermediate",
+    question:
+      "A Deployment has selector matchLabels {app: web} and template labels {app: website}. What happens when you apply it?",
+    options: [
+      { id: "a", text: "It is created but never starts any Pods" },
+      { id: "b", text: "Kubernetes copies the selector labels onto the Pods" },
+      { id: "c", text: "The API server rejects it because the template labels do not satisfy the selector" },
+      { id: "d", text: "It adopts any existing Pods labelled app=website" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "The template labels must satisfy the selector, or the controller could never count its own Pods. The API server checks this and rejects the manifest. Nothing copies labels from the selector.",
+  },
+  {
+    id: "labels-pod-template-hash",
+    topic: "Selectors",
+    difficulty: "advanced",
+    question:
+      "How does a Deployment keep each of its ReplicaSets from selecting the other ReplicaSets' Pods?",
+    options: [
+      { id: "a", text: "It adds a pod-template-hash label to each ReplicaSet's selector and Pods" },
+      { id: "b", text: "Each ReplicaSet tracks a list of its Pod names" },
+      { id: "c", text: "Each ReplicaSet runs in its own namespace" },
+      { id: "d", text: "It adds a version label taken from the image tag" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "The Deployment passes its selector on and adds pod-template-hash, which differs per template version. ReplicaSets never keep a list of Pod names; they always ask which Pods match their selector.",
+  },
+  {
+    id: "labels-overlap",
+    topic: "Selectors",
+    difficulty: "advanced",
+    question: "Two ReplicaSets in one namespace both select app=api. What happens?",
+    options: [
+      { id: "a", text: "The API server rejects the second ReplicaSet" },
+      { id: "b", text: "They share the Pods peacefully" },
+      { id: "c", text: "The older ReplicaSet deletes the newer one" },
+      { id: "d", text: "They can fight over the same Pods, because nothing stops overlapping selectors" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "Kubernetes does not block overlapping selectors. Each controller counts Pods it can match, so they can create and delete each other's Pods. Add labels, such as an instance label, to make each selector unique.",
+  },
+  {
+    id: "labels-orphan-service",
+    topic: "Selectors",
+    difficulty: "intermediate",
+    question:
+      "A Service selects app=api. You relabel one api Pod to app=debug to investigate it. Does it still get Service traffic?",
+    options: [
+      { id: "a", text: "No, it no longer matches the Service selector, so it leaves the endpoints" },
+      { id: "b", text: "Yes, a Service keeps every Pod it has ever selected" },
+      { id: "c", text: "Yes, until the ReplicaSet deletes it" },
+      { id: "d", text: "Only if it is still owned by the ReplicaSet" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "A Service sends traffic to whatever ready Pods match its selector right now, whoever owns them. Changing the label takes the Pod out of the ReplicaSet and out of the Service, so you can inspect it without users hitting it.",
+  },
+  {
+    id: "labels-lost-on-replace",
+    topic: "kubectl label",
+    difficulty: "intermediate",
+    question:
+      "You run kubectl label pod on a Pod managed by a Deployment to add team=payments. Later the Pod is replaced. Does the new Pod have team=payments?",
+    options: [
+      { id: "a", text: "Yes, the Deployment copies labels from the old Pod" },
+      { id: "b", text: "Yes, if you used --overwrite" },
+      { id: "c", text: "No, new Pods get the template labels, so put lasting labels in the template" },
+      { id: "d", text: "No, and the Deployment also removes it from the old Pods" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "Replacement Pods are built from spec.template. Labels added by hand live only on that one Pod. --overwrite only allows changing an existing value.",
+  },
+  {
+    id: "labels-change-cause",
+    topic: "Annotations",
+    difficulty: "intermediate",
+    question: "Where does the kubernetes.io/change-cause annotation on a Deployment show up?",
+    options: [
+      { id: "a", text: "In kubectl get pods -l output" },
+      { id: "b", text: "As a label on every Pod" },
+      { id: "c", text: "In the Service's endpoints" },
+      { id: "d", text: "In the CHANGE-CAUSE column of kubectl rollout history" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "kubectl rollout history reads change-cause and shows it per revision. It is an annotation, so no selector, -l included, can match it, and it is not copied to Pods as a label.",
+  },
+  {
+    id: "labels-template-change",
+    topic: "Labels YAML",
+    difficulty: "advanced",
+    question:
+      "You add env: prod to a Deployment's template labels. env is not in the selector. What happens when you apply it?",
+    options: [
+      { id: "a", text: "Nothing, labels outside the selector are ignored" },
+      { id: "b", text: "A rollout starts, because the Pod template changed" },
+      { id: "c", text: "The API server rejects it, all template labels must be in the selector" },
+      { id: "d", text: "The existing Pods get the label in place" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "The template may carry labels the selector does not use, but any change to the template is a new Pod version, so the Deployment rolls out new Pods. The selector only has to be satisfied by the template, not cover it.",
+  },
 ];
