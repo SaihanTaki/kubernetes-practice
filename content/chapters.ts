@@ -16,6 +16,7 @@ import { data as ingress } from "./chapters/ingress.data";
 import { data as networkPolicies } from "./chapters/network-policies.data";
 import { data as resources } from "./chapters/resources.data";
 import { data as volumes } from "./chapters/volumes.data";
+import { data as daemonsetsStatefulsets } from "./chapters/daemonsets-statefulsets.data";
 import type { ChapterData, Difficulty } from "./types";
 
 export type Chapter = {
@@ -192,6 +193,15 @@ export const chapters: Chapter[] = [
     difficulty: "intermediate",
     ready: true,
     data: volumes,
+  },
+  {
+    slug: "daemonsets-statefulsets",
+    section: "Storage & Scheduling",
+    title: "DaemonSets and StatefulSets",
+    summary: "Run one Pod per node, or Pods with stable names and their own storage.",
+    difficulty: "intermediate",
+    ready: true,
+    data: daemonsetsStatefulsets,
   },
 ];
 

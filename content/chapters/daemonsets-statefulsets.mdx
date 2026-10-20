@@ -1,0 +1,156 @@
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## Two jobs a Deployment does not do
+
+A Deployment treats its Pods as interchangeable: it counts them, gives them random names, and does not care which node they land on. Two kinds of workload need something else:
+
+- **Something on every node.** A log collector has to read each node's `/var/log`. A metrics exporter has to report each node's CPU and disk. A **DaemonSet** runs one Pod per eligible node.
+- **Pods that are not interchangeable.** A database replica needs to keep its own data and be reachable by a name that does not change. A **StatefulSet** gives each Pod a fixed name, a DNS record, and its own volume.
+
+## DaemonSets
+
+Typical DaemonSets:
+
+- Log agents such as Fluent Bit or Vector, which read container logs from the node's disk.
+- Node exporters, such as Prometheus `node-exporter`, which report the node's own metrics.
+- Network plugins (CNI) such as Calico or Cilium, and `kube-proxy`, which set up networking on each node.
+- Storage drivers (CSI node plugins), which mount volumes for Pods on that node.
+
+A DaemonSet has no `replicas` field. It asks one question per node: may this Pod run here? Every node that says yes gets exactly one Pod, named `<daemonset>-<5 random characters>`. When a node joins, it gets a Pod. When a node is removed, its Pod goes with it.
+
+```bash
+kubectl get daemonsets
+```
+
+```text
+NAME        DESIRED   CURRENT   READY   UP-TO-DATE   AVAILABLE   NODE SELECTOR   AGE
+log-agent   2         2         2       2            2           <none>          10m
+```
+
+`DESIRED` is the number of eligible nodes, not a number you chose.
+
+### Which nodes are eligible
+
+Three things decide it, the same ones the scheduler uses for any Pod:
+
+- **Taints and tolerations.** A taint on a node repels every Pod that does not tolerate it. Control plane nodes usually carry `node-role.kubernetes.io/control-plane:NoSchedule`, so a DaemonSet skips them unless its Pod template has a matching toleration. A log agent that skips the control plane never collects the control plane's logs.
+- **nodeSelector.** Only nodes with all the listed labels are eligible. Use it to run a GPU driver only on GPU nodes, or a Linux agent only on `kubernetes.io/os: linux`.
+- **Node affinity.** The longer form of nodeSelector, with `In`, `NotIn`, and `Exists` rules.
+
+Step through the diagram to see the toleration and a new node change where Pods run.
+
+<Diagram id="daemonset-nodes" />
+
+<Callout title="Common mistake: expecting a DaemonSet on the control plane">
+  A DaemonSet that shows `DESIRED 2` on a three-node cluster is usually not broken. Run `kubectl describe node
+  control-plane` and look at `Taints`. Add a toleration only for agents that really belong there, such as logging,
+  monitoring, and networking.
+</Callout>
+
+### Updates
+
+`updateStrategy` controls what happens when you change the Pod template:
+
+- `RollingUpdate` (default): Pods are replaced node by node. `maxUnavailable` (default 1) is how many nodes may be without a ready Pod at a time. By default the old Pod on a node is removed before the new one starts there.
+- `OnDelete`: the new template is stored, but nothing is replaced until you delete a Pod yourself. Useful when you want to choose when each node is touched.
+
+```bash
+kubectl rollout status daemonset/log-agent
+```
+
+<Callout title="Common mistake: drain stops at DaemonSet Pods">
+  `kubectl drain` refuses to evict DaemonSet Pods because the DaemonSet would put them straight back on the same node.
+  Run it with `--ignore-daemonsets`.
+</Callout>
+
+## StatefulSets
+
+A StatefulSet manages Pods directly, without a ReplicaSet, and gives each one an identity:
+
+- **A stable name with an ordinal.** A StatefulSet `web` with 3 replicas runs `web-0`, `web-1`, and `web-2`. Delete `web-1` and a new Pod named `web-1` replaces it.
+- **A stable DNS name.** Through a headless Service, each Pod gets a record like `web-0.web.default.svc.cluster.local`. Other Pods can always reach "replica 0" by name, even after it is recreated with a new IP.
+- **Its own storage.** Each Pod gets a PersistentVolumeClaim from `volumeClaimTemplates`. The claim outlives the Pod: a recreated `web-0` mounts the same `data-web-0` and sees the same files. The [Volumes](/chapters/volumes) chapter covers PVCs and StorageClasses.
+
+### The headless Service
+
+A normal Service has a virtual IP and spreads requests across its Pods. That is the opposite of what you want when a client has to reach one specific replica. A Service with `clusterIP: None` is **headless**: it has no virtual IP, and DNS answers with the Pod IPs directly, plus one record per StatefulSet Pod.
+
+```bash
+kubectl get service web
+```
+
+```text
+NAME   TYPE        CLUSTER-IP   EXTERNAL-IP   PORT(S)   AGE
+web    ClusterIP   None         <none>        80/TCP    10m
+```
+
+The StatefulSet's `serviceName` must name this Service. You create it yourself; the StatefulSet does not.
+
+### Ordered start and stop
+
+With the default `podManagementPolicy: OrderedReady`:
+
+1. Pods are created in order, `web-0` first. Each one starts only after the previous one is Running and ready.
+2. Scaling down removes the highest ordinal first, one at a time.
+3. A rolling update replaces Pods from the highest ordinal down, one at a time.
+
+This suits systems where the first member bootstraps the cluster and the rest join it. If your Pods do not depend on each other, `podManagementPolicy: Parallel` creates and deletes them all at once. It changes only scaling: names, DNS, claims, and rolling updates stay the same.
+
+<Diagram id="statefulset-ordered" />
+
+### Scaling and storage
+
+```bash
+kubectl scale statefulset web --replicas=3
+kubectl get pvc
+```
+
+```text
+NAME         STATUS   VOLUME        CAPACITY   ACCESS MODES   STORAGECLASS   VOLUMEATTRIBUTESCLASS   AGE
+data-web-0   Bound    pvc-3f1c...   1Gi        RWO            standard       <unset>                 10m
+data-web-1   Bound    pvc-8a72...   1Gi        RWO            standard       <unset>                 40s
+data-web-2   Bound    pvc-c09e...   1Gi        RWO            standard       <unset>                 20s
+```
+
+Scaling down to 1 removes `web-2` and `web-1` but keeps `data-web-1` and `data-web-2`. Scale back up and each ordinal gets its old data again. Deleting the StatefulSet keeps the claims too. Delete them yourself when you no longer need the data.
+
+<Callout title="Common mistake: expecting storage to be cleaned up">
+  StatefulSet claims are never deleted by scaling down or deleting the StatefulSet, unless you set
+  `persistentVolumeClaimRetentionPolicy`. Old claims keep their volumes, and you keep paying for them. Check `kubectl
+  get pvc` after removing a StatefulSet.
+</Callout>
+
+### When not to use a StatefulSet
+
+- **Stateless apps.** If any replica can serve any request and keeps nothing on local disk, use a Deployment. A StatefulSet only adds slower, one-at-a-time rollouts and storage you do not need.
+- **Production databases.** A StatefulSet gives stable names and disks, nothing more. It does not know which Pod is the primary, promote a replica when the primary fails, or take backups. Use a managed database service, or an operator (such as CloudNativePG for PostgreSQL) that runs StatefulSets for you and handles those jobs.
+
+## The manifests
+
+A log agent DaemonSet that also runs on the control plane and reads each node's `/var/log`:
+
+<YamlWalkthrough id="daemonset-log-agent" />
+
+The headless Service for a StatefulSet:
+
+<YamlWalkthrough id="headless-service-web" />
+
+And the StatefulSet itself, with one 1Gi volume per Pod:
+
+<YamlWalkthrough id="statefulset-web" />
+
+## Practice
+
+First get the log agent onto the control plane node, then scale a StatefulSet and check that a Pod's data survives the Pod.
+
+<Lab id="daemonsets-statefulsets-agent-and-web" />
+
+## Check yourself
+
+<Quiz id="daemonsets-statefulsets" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).
