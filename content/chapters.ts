@@ -17,6 +17,7 @@ import { data as networkPolicies } from "./chapters/network-policies.data";
 import { data as resources } from "./chapters/resources.data";
 import { data as volumes } from "./chapters/volumes.data";
 import { data as daemonsetsStatefulsets } from "./chapters/daemonsets-statefulsets.data";
+import { data as scheduling } from "./chapters/scheduling.data";
 import type { ChapterData, Difficulty } from "./types";
 
 export type Chapter = {
@@ -202,6 +203,15 @@ export const chapters: Chapter[] = [
     difficulty: "intermediate",
     ready: true,
     data: daemonsetsStatefulsets,
+  },
+  {
+    slug: "scheduling",
+    section: "Storage & Scheduling",
+    title: "Scheduling: Selectors, Affinity, and Taints",
+    summary: "Steer Pods to the right nodes, keep them apart, and reserve nodes for special work.",
+    difficulty: "advanced",
+    ready: true,
+    data: scheduling,
   },
 ];
 
