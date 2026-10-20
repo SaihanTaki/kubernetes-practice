@@ -23,5 +23,10 @@ export function useCluster(fixture: Fixture) {
     setEpoch((e) => e + 1);
   }, [fixture]);
 
-  return { cluster, execute, reset, epoch };
+  const setFile = useCallback((name: string, text: string) => {
+    ref.current = { ...ref.current, files: { ...ref.current.files, [name]: text } };
+    setCluster(ref.current);
+  }, []);
+
+  return { cluster, execute, reset, epoch, setFile };
 }

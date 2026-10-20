@@ -2,6 +2,7 @@
 
 import { labs } from "@/content/chapters";
 import { check, type LabDefinition } from "@/lib/labs";
+import { FileEditor } from "./FileEditor";
 import { Terminal } from "./Terminal";
 import { useCluster } from "./useCluster";
 import { WorkloadDiagram } from "./WorkloadDiagram";
@@ -14,7 +15,7 @@ export function Lab({ id }: { id: string }) {
 
 function LabView({ lab }: { lab: LabDefinition }) {
   const { id } = lab;
-  const { cluster, execute, reset, epoch } = useCluster(lab.fixture);
+  const { cluster, execute, reset, epoch, setFile } = useCluster(lab.fixture);
   const done = lab.objectives.map((o) => check(cluster, o.validator));
   const complete = done.every(Boolean);
 
@@ -57,6 +58,14 @@ function LabView({ lab }: { lab: LabDefinition }) {
             ))}
             <details className="rounded border border-border">
               <summary className="cursor-pointer px-3 py-3 text-sm">Show solution</summary>
+              {Object.entries(lab.solutionFiles ?? {}).map(([name, text]) => (
+                <div key={name} className="px-3 pb-3">
+                  <p className="text-sm">
+                    Edit <code className="font-mono">{name}</code> to:
+                  </p>
+                  <pre className="mt-1 overflow-x-auto rounded bg-code p-2 font-mono text-sm">{text}</pre>
+                </div>
+              ))}
               <pre className="px-3 pb-3 font-mono text-sm whitespace-pre-wrap">{lab.solution.join("\n")}</pre>
             </details>
           </div>
@@ -73,6 +82,13 @@ function LabView({ lab }: { lab: LabDefinition }) {
           </button>
         </div>
       </div>
+
+      {Object.keys(cluster.files).length > 0 && (
+        <div className="mt-6">
+          <h4 className="mb-2 text-sm font-semibold">Files</h4>
+          <FileEditor key={epoch} files={cluster.files} onChange={setFile} />
+        </div>
+      )}
 
       <div className="mt-6">
         <WorkloadDiagram cluster={cluster} />
