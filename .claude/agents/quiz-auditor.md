@@ -19,7 +19,7 @@ Edit ONLY `content/chapters/<slug>.quiz.ts` for your chapters. Read anything. Yo
 
 ## Question rules (match the existing file)
 
-- Same shape and style as the existing questions; ids continue the existing `<slug>-<n>` pattern without reusing ids.
+- Same shape and style as the existing questions; ids follow the file's existing id pattern without reusing ids.
 - Single answer, four options a to d. Distractors plausible but clearly wrong to someone who read the chapter. The explanation says why the answer is right and why the tempting wrong one is wrong.
 - Mix difficulties; keep correct letters evenly spread across the whole quiz after your additions.
 - Topic YAML questions where the concept is a manifest field. Option text cannot contain newlines: write YAML inline (flow style or `a: b` fragments).
@@ -28,4 +28,6 @@ Edit ONLY `content/chapters/<slug>.quiz.ts` for your chapters. Read anything. Yo
 
 ## Done
 
-Run `pnpm exec vitest run tests/content` and `pnpm exec tsc --noEmit`; both pass. Commit only your quiz files with a Conventional Commit message in caveman-commit style, e.g. `test(quiz): cover headless Services and EndpointSlices`, one commit per chapter that changed. No Co-Authored-By or any attribution line. Reply briefly per chapter: count before → after, the concepts you added questions for (or "covered, no change"), any existing question you fixed and why, and your branch name.
+Run `./node_modules/.bin/vitest run tests/content` and `./node_modules/.bin/tsc --noEmit`; both pass. Not `pnpm exec`: in a worktree it tries to reinstall over the symlinked node_modules. Commit only your quiz files with a Conventional Commit message in caveman-commit style, e.g. `test(quiz): cover headless Services and EndpointSlices`, one commit per chapter that changed. No Co-Authored-By or any attribution line. Reply briefly per chapter: count before → after, the concepts you added questions for (or "covered, no change"), any existing question you fixed and why, and your branch name.
+
+Put temporary files in your own subfolder of the scratchpad; parallel auditors share it.
