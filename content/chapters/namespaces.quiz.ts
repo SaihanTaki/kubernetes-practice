@@ -310,4 +310,81 @@ export const quiz: QuizQuestion[] = [
     correctOptionId: "b",
     explanation: "Namespaces fit teams and environments. A namespace per tiny service adds -n noise, and namespaces share nodes and the control plane.",
   },
+  {
+    id: "namespaces-builtin-public",
+    topic: "Namespaces",
+    difficulty: "intermediate",
+    question: "Which built-in namespace is readable by everyone, including clients that have not authenticated?",
+    options: [
+      { id: "a", text: "kube-public" },
+      { id: "b", text: "default" },
+      { id: "c", text: "kube-system" },
+      { id: "d", text: "kube-node-lease" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "kube-public holds a small amount of cluster information meant to be readable by anyone. default is just where your resources go when you name no namespace; it is not open to unauthenticated clients.",
+  },
+  {
+    id: "namespaces-terminating",
+    topic: "Namespaces",
+    difficulty: "intermediate",
+    question:
+      "On a real cluster you run kubectl delete namespace staging and then kubectl get namespaces right away. What do you most likely see for staging?",
+    options: [
+      { id: "a", text: "Active, because deletion waits for a confirmation" },
+      { id: "b", text: "Pending, until every Pod in it is moved to default" },
+      { id: "c", text: "Terminating, while Kubernetes deletes its contents" },
+      { id: "d", text: "Active again, because staging is a built-in namespace that cannot be deleted" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "The namespace shows Terminating while its resources are removed, then disappears. There is no confirmation step and nothing is moved. Only built-in namespaces such as default and kube-system cannot be deleted, and staging is not one of them.",
+  },
+  {
+    id: "namespaces-flag-mismatch",
+    topic: "Namespace YAML",
+    difficulty: "advanced",
+    question: "A manifest sets metadata.namespace: dev. You run kubectl apply -f web.yaml -n prod. What happens?",
+    options: [
+      { id: "a", text: "The resource goes to prod, because -n wins" },
+      { id: "b", text: "The resource goes to dev, and -n is ignored" },
+      { id: "c", text: "The resource is created in both dev and prod" },
+      { id: "d", text: "kubectl refuses with an error that the namespaces do not match" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "When an explicit -n disagrees with metadata.namespace in the file, kubectl stops with a mismatch error instead of guessing. Without -n, the file's namespace is used.",
+  },
+  {
+    id: "namespaces-same-ns-children",
+    topic: "Namespaces",
+    difficulty: "intermediate",
+    question:
+      "A Deployment web in dev selects app: web. Pods labeled app: web also run in default. Which Pods does the Deployment in dev count as its own?",
+    options: [
+      { id: "a", text: "All Pods labeled app: web in every namespace" },
+      { id: "b", text: "Only the Pods in default, because default is checked first" },
+      { id: "c", text: "Only matching Pods in dev, where its ReplicaSet creates them" },
+      { id: "d", text: "None, because two namespaces use the same label" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "A Deployment's ReplicaSets and Pods are created in its own namespace, and its selector only matches Pods there. The app: web Pods in default belong to a different Deployment.",
+  },
+  {
+    id: "namespaces-name-rules",
+    topic: "Namespace YAML",
+    difficulty: "beginner",
+    question: "Which of these is a valid Namespace name?",
+    options: [
+      { id: "a", text: "Team_Dev" },
+      { id: "b", text: "team.dev/eu" },
+      { id: "c", text: "TeamDev" },
+      { id: "d", text: "team-dev" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "A Namespace name must be a valid DNS label: lowercase letters, digits, and dashes. Uppercase letters, underscores, dots, and slashes are rejected.",
+  },
 ];
