@@ -14,6 +14,7 @@ import { data as healthChecks } from "./chapters/health-checks.data";
 import { data as jobs } from "./chapters/jobs.data";
 import { data as ingress } from "./chapters/ingress.data";
 import { data as networkPolicies } from "./chapters/network-policies.data";
+import { data as resources } from "./chapters/resources.data";
 import type { ChapterData, Difficulty } from "./types";
 
 export type Chapter = {
@@ -172,6 +173,15 @@ export const chapters: Chapter[] = [
     difficulty: "intermediate",
     ready: true,
     data: healthChecks,
+  },
+  {
+    slug: "resources",
+    section: "Configuration",
+    title: "Resource Requests and Limits",
+    summary: "Reserve CPU and memory for a container, cap what it may use, and see what happens when it does not fit.",
+    difficulty: "intermediate",
+    ready: true,
+    data: resources,
   },
 ];
 
