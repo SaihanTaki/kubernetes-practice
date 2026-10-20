@@ -1,44 +1,46 @@
 @import "tailwindcss";
 
+/* Palette from DESIGN.md: warm paper, ink text, Kubernetes blue as the one accent. */
 :root {
-  --bg: #fafaf9;
-  --surface: #ffffff;
-  --fg: #1c1917;
-  --muted: #57534e;
-  --border: #d6d3d1;
-  --accent: #2557c7;
-  --ok: #15803d;
-  --bad: #b91c1c;
-  --code-bg: #f0efed;
+  --bg: #f6f3ec;
+  --surface: #fffdf8;
+  --fg: #1c2230;
+  --muted: #555c6a;
+  --border: #e0dacd;
+  --accent: #2a5bc8;
+  --accent-fill: #326ce5;
+  --ok: #17703a;
+  --bad: #b42318;
+  --code-bg: #eee9de;
   color-scheme: light;
 }
 
 /* The OS preference applies unless the reader picked a theme (data-theme on <html>). */
 @media (prefers-color-scheme: dark) {
   :root:not([data-theme="light"]) {
-    --bg: #121212;
-    --surface: #1b1b1b;
-    --fg: #ededed;
-    --muted: #a8a29e;
-    --border: #3a3a3a;
-    --accent: #8ab4ff;
+    --bg: #11141a;
+    --surface: #181c24;
+    --fg: #ebe8e1;
+    --muted: #a2a8b4;
+    --border: #2b313c;
+    --accent: #86abf7;
     --ok: #4ade80;
     --bad: #f87171;
-    --code-bg: #232323;
+    --code-bg: #1f242d;
     color-scheme: dark;
   }
 }
 
 :root[data-theme="dark"] {
-  --bg: #121212;
-  --surface: #1b1b1b;
-  --fg: #ededed;
-  --muted: #a8a29e;
-  --border: #3a3a3a;
-  --accent: #8ab4ff;
+  --bg: #11141a;
+  --surface: #181c24;
+  --fg: #ebe8e1;
+  --muted: #a2a8b4;
+  --border: #2b313c;
+  --accent: #86abf7;
   --ok: #4ade80;
   --bad: #f87171;
-  --code-bg: #232323;
+  --code-bg: #1f242d;
   color-scheme: dark;
 }
 
@@ -49,11 +51,12 @@
   --color-muted: var(--muted);
   --color-border: var(--border);
   --color-accent: var(--accent);
+  --color-accent-fill: var(--accent-fill);
   --color-ok: var(--ok);
   --color-bad: var(--bad);
   --color-code: var(--code-bg);
-  --font-sans: ui-sans-serif, system-ui, sans-serif;
-  --font-mono: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+  --font-sans: var(--font-plex-sans), ui-sans-serif, system-ui, sans-serif;
+  --font-mono: var(--font-plex-mono), ui-monospace, Menlo, Consolas, monospace;
 }
 
 body {
