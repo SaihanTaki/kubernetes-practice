@@ -46,7 +46,7 @@ describe("kubectl exec", () => {
   });
 
   it("names the supported commands for anything else", () => {
-    expect(exec(cluster(), "kubectl exec box -- rm -rf /").output).toBe("error: the simulator only supports cat, ls and echo in exec, directly or inside sh -c '...'");
+    expect(exec(cluster(), "kubectl exec box -- rm -rf /").output).toBe("error: the simulator only supports cat, ls, echo, env, printenv, wget, curl, nslookup and hostname in exec, directly or inside sh -c '...'");
     expect(exec(cluster(), "kubectl exec box -- sh -c 'echo ok; reboot'").error).toBe(true);
   });
 

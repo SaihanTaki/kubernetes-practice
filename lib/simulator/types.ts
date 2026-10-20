@@ -116,6 +116,7 @@ export type PodSpec = {
   restartPolicy?: "OnFailure" | "Never";
   volumes?: Volume[];
   serviceAccountName?: string;
+  automountServiceAccountToken?: boolean;
   nodeName?: string;
   nodeSelector?: Labels;
   tolerations?: Toleration[];
@@ -310,6 +311,55 @@ export type PersistentVolumeClaim = {
   terminating?: boolean;
 };
 
+export type IngressBackend = { service: { name: string; port: { number?: number; name?: string } } };
+
+export type IngressPath = { path: string; pathType: "Prefix" | "Exact" | "ImplementationSpecific"; backend: IngressBackend };
+
+export type Ingress = {
+  kind: "Ingress";
+  metadata: Meta;
+  ingressClassName?: string;
+  defaultBackend?: IngressBackend;
+  /** A rule without host matches every host. */
+  rules: { host?: string; paths: IngressPath[] }[];
+  tls: { hosts: string[]; secretName?: string }[];
+};
+
+export type IngressClass = { kind: "IngressClass"; metadata: Meta; controller: string };
+
+export type NetworkPolicyPeer = { podSelector?: LabelSelector; namespaceSelector?: LabelSelector; ipBlock?: { cidr: string; except?: string[] } };
+
+export type NetworkPolicyPort = { protocol?: "TCP" | "UDP" | "SCTP"; port?: PortRef };
+
+/** An empty or missing peer or port list matches everything. */
+export type NetworkPolicyRule = { peers?: NetworkPolicyPeer[]; ports?: NetworkPolicyPort[] };
+
+export type NetworkPolicy = {
+  kind: "NetworkPolicy";
+  metadata: Meta;
+  podSelector: LabelSelector;
+  /** Defaulted on creation, as the API server does. */
+  policyTypes: ("Ingress" | "Egress")[];
+  ingress: NetworkPolicyRule[];
+  egress: NetworkPolicyRule[];
+};
+
+export type ServiceAccount = { kind: "ServiceAccount"; metadata: Meta; automountServiceAccountToken?: boolean };
+
+export type PolicyRule = { apiGroups?: string[]; resources?: string[]; verbs: string[]; resourceNames?: string[]; nonResourceURLs?: string[] };
+
+export type Role = { kind: "Role"; metadata: Meta; rules: PolicyRule[] };
+
+export type ClusterRole = { kind: "ClusterRole"; metadata: Meta; rules: PolicyRule[] };
+
+export type Subject = { kind: "User" | "Group" | "ServiceAccount"; name: string; namespace?: string };
+
+export type RoleRef = { kind: "Role" | "ClusterRole"; name: string };
+
+export type RoleBinding = { kind: "RoleBinding"; metadata: Meta; subjects: Subject[]; roleRef: RoleRef };
+
+export type ClusterRoleBinding = { kind: "ClusterRoleBinding"; metadata: Meta; subjects: Subject[]; roleRef: RoleRef };
+
 export type Resource =
   | Pod
   | ReplicaSet
@@ -326,7 +376,15 @@ export type Resource =
   | StatefulSet
   | StorageClass
   | PersistentVolume
-  | PersistentVolumeClaim;
+  | PersistentVolumeClaim
+  | Ingress
+  | IngressClass
+  | NetworkPolicy
+  | ServiceAccount
+  | Role
+  | ClusterRole
+  | RoleBinding
+  | ClusterRoleBinding;
 export type Kind = Resource["kind"];
 
 export type ClusterEvent = {
@@ -350,12 +408,16 @@ export type Cluster = {
   /** Kept apart from `resources`; reach both through find() and list(). */
   nodes: Node[];
   namespaces: string[];
+  /** Labels set on namespaces; kubernetes.io/metadata.name is added when read. */
+  namespaceLabels: Record<string, Labels>;
   resources: Exclude<Resource, Node>[];
   events: ClusterEvent[];
   /** Simulated files (name -> text) for ls, cat, redirects and apply -f. */
   files: Record<string, string>;
   /** Files inside containers and volumes: store key (see files.ts) -> path in the store -> text. */
   volumes: Record<string, Record<string, string>>;
+  /** Calls so far per Service (and per Ingress backend), so connections rotate over endpoints. */
+  connections: Record<string, number>;
 };
 
 type WorkloadFixture = { name: string; namespace?: string; replicas: number; image: string; labels: Labels };

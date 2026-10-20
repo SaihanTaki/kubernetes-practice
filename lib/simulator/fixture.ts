@@ -1,5 +1,7 @@
 import { containerName, converge, crashes, defaultNodes, list, meta } from "./cluster";
+import { defaultIngressClass } from "./ingress";
 import { run } from "./kubectl";
+import { builtinRbac } from "./rbac";
 import { defaultStorageClass } from "./storage";
 import type { Cluster, Fixture, Labels } from "./types";
 
@@ -15,13 +17,15 @@ export function createCluster(fixture: Fixture = {}): Cluster {
     seq: 1,
     nodes: [],
     namespaces: ["default", "kube-system", ...(fixture.namespaces ?? [])],
+    namespaceLabels: {},
     resources: [],
     events: [],
     files: { ...fixture.files },
     volumes: {},
+    connections: {},
   };
   c.nodes = defaultNodes(c);
-  c.resources.push(defaultStorageClass(c));
+  c.resources.push(defaultStorageClass(c), defaultIngressClass(c), ...builtinRbac(c));
   const ns = (n?: string) => n ?? "default";
   for (const d of fixture.deployments ?? []) {
     c.resources.push({
@@ -63,7 +67,7 @@ export function createCluster(fixture: Fixture = {}): Cluster {
     converge(c);
   }
   for (const p of list(c, "Pod")) {
-    if ((p.status === "Running" || p.status === "CrashLoopBackOff" || p.status === "OOMKilled") && crashes(p)) {
+    if ((p.status === "Running" || p.status === "CrashLoopBackOff" || p.status === "OOMKilled") && crashes(c, p)) {
       p.restarts = Math.max(p.restarts, AGED_RESTARTS);
       p.status = "CrashLoopBackOff";
     }

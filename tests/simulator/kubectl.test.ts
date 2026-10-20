@@ -121,7 +121,7 @@ describe("delete", () => {
 
   it("cascades a Deployment delete to its ReplicaSet and Pods", () => {
     const { c } = exec(web(), "kubectl delete deployment web");
-    expect(c.resources.filter((r) => r.kind !== "StorageClass")).toHaveLength(0);
+    expect(c.resources.filter((r) => /^\d+$/.test(r.metadata.uid))).toHaveLength(0);
   });
 });
 

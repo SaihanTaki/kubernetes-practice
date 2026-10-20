@@ -28,6 +28,7 @@ import {
   find,
   HASH_LABEL,
   hash,
+  hasIP,
   isReady,
   lastTermination,
   qosClass,
@@ -58,9 +59,31 @@ import {
 } from "./batch";
 import { eventsOf } from "./events";
 import { exec } from "./exec";
+import { apiGroup, apiName, GROUP, PLURAL, type ResourceType, TYPES } from "./kinds";
 import { timestamp } from "./images";
 import { cordon, describeNode, drain, NODE_HEADER, NODE_WIDE_HEADER, nodeManifest, nodeRow, taint } from "./nodes";
 import { getEvents, kubeletEvents, logs, top } from "./observe";
+import { describeIngress, ingressManifest, ingressRow, INGRESS_HEADERS, laptopCurl } from "./ingress";
+import { describeNetpol, namespaceLabels, NETPOL_HEADER, netpolManifest, netpolRow } from "./netpol";
+import {
+  ADMIN,
+  apiResource,
+  type Attributes,
+  authorize,
+  BINDING_WIDE_HEADER,
+  canIList,
+  describeRbac,
+  forbidden,
+  impersonate,
+  RBAC_GROUP,
+  RBAC_HEADERS,
+  rbacManifest,
+  rbacRow,
+  rulesFromFlags,
+  subjectsFromFlags,
+  type User,
+  VERBS,
+} from "./rbac";
 import { containerLines, volumeLines } from "./podtext";
 import {
   DAEMONSET_HEADER,
@@ -101,55 +124,16 @@ import type {
   StatefulSet,
   StorageClass,
   PersistentVolume,
+  NetworkPolicy,
+  Ingress,
+  IngressBackend,
+  Role,
+  ClusterRole,
+  RoleBinding,
+  ClusterRoleBinding,
 } from "./types";
 
 type Manifest = z.infer<typeof manifestSchema>;
-
-type ResourceType = Kind | "Namespace" | "Endpoints" | "Event";
-
-const TYPES: Record<string, ResourceType> = {
-  po: "Pod", pod: "Pod", pods: "Pod",
-  rs: "ReplicaSet", replicaset: "ReplicaSet", replicasets: "ReplicaSet",
-  deploy: "Deployment", deployment: "Deployment", deployments: "Deployment",
-  svc: "Service", service: "Service", services: "Service",
-  ep: "Endpoints", endpoints: "Endpoints",
-  cm: "ConfigMap", configmap: "ConfigMap", configmaps: "ConfigMap",
-  secret: "Secret", secrets: "Secret",
-  ns: "Namespace", namespace: "Namespace", namespaces: "Namespace",
-  no: "Node", node: "Node", nodes: "Node",
-  limits: "LimitRange", limitrange: "LimitRange", limitranges: "LimitRange",
-  quota: "ResourceQuota", resourcequota: "ResourceQuota", resourcequotas: "ResourceQuota",
-  ev: "Event", event: "Event", events: "Event",
-  job: "Job", jobs: "Job",
-  cj: "CronJob", cronjob: "CronJob", cronjobs: "CronJob",
-  ds: "DaemonSet", daemonset: "DaemonSet", daemonsets: "DaemonSet",
-  sts: "StatefulSet", statefulset: "StatefulSet", statefulsets: "StatefulSet",
-  pv: "PersistentVolume", persistentvolume: "PersistentVolume", persistentvolumes: "PersistentVolume",
-  pvc: "PersistentVolumeClaim", persistentvolumeclaim: "PersistentVolumeClaim", persistentvolumeclaims: "PersistentVolumeClaim",
-  sc: "StorageClass", storageclass: "StorageClass", storageclasses: "StorageClass",
-};
-
-const PLURAL: Record<ResourceType, string> = {
-  Pod: "pods", ReplicaSet: "replicasets", Deployment: "deployments", Namespace: "namespaces", Node: "nodes",
-  Service: "services", Endpoints: "endpoints", ConfigMap: "configmaps", Secret: "secrets",
-  LimitRange: "limitranges", ResourceQuota: "resourcequotas", Event: "events",
-  Job: "jobs", CronJob: "cronjobs", DaemonSet: "daemonsets", StatefulSet: "statefulsets",
-  PersistentVolume: "persistentvolumes", PersistentVolumeClaim: "persistentvolumeclaims", StorageClass: "storageclasses",
-};
-
-const GROUP: Record<ResourceType, string> = {
-  Pod: "pod", ReplicaSet: "replicaset.apps", Deployment: "deployment.apps", Namespace: "namespace", Node: "node",
-  Service: "service", Endpoints: "endpoints", ConfigMap: "configmap", Secret: "secret",
-  LimitRange: "limitrange", ResourceQuota: "resourcequota", Event: "event",
-  Job: "job.batch", CronJob: "cronjob.batch", DaemonSet: "daemonset.apps", StatefulSet: "statefulset.apps",
-  PersistentVolume: "persistentvolume", PersistentVolumeClaim: "persistentvolumeclaim", StorageClass: "storageclass.storage.k8s.io",
-};
-
-/** `deployments.apps`, `jobs.batch`, `pods`: the resource name the API uses in errors. */
-const apiName = (type: ResourceType) => {
-  const dot = GROUP[type].indexOf(".");
-  return dot === -1 ? PLURAL[type] : `${PLURAL[type]}${GROUP[type].slice(dot)}`;
-};
 
 /** The namespace a command acts in: "" for cluster-scoped kinds, which ignore -n. */
 const nsOf = (type: ResourceType, p: Parsed) => (CLUSTER_SCOPED.has(type) ? "" : p.namespace);
@@ -159,6 +143,8 @@ const IMAGE_RE = /^[a-z0-9./:_-]+$/;
 const FILE_RE = /^[a-zA-Z0-9._-]+$/;
 const PORT_NAME_RE = /^(?=.*[a-z])[a-z0-9]([-a-z0-9]{0,13}[a-z0-9])?$/;
 const PROTECTED_NAMESPACES = ["default", "kube-system"];
+/** User, group and ServiceAccount names: letters, digits and : @ . _ - */
+const IDENTITY_RE = /^[A-Za-z0-9:@._-]{1,253}$/;
 const SERVICE_TYPES: ServiceType[] = ["ClusterIP", "NodePort", "LoadBalancer"];
 const MAX_REPLICAS = 20;
 const MAX_ANNOTATION = 1024;
@@ -174,7 +160,9 @@ Supported commands:
              limitranges (limits), resourcequotas (quota), events (ev),
              jobs, cronjobs (cj), daemonsets (ds), statefulsets (sts),
              persistentvolumes (pv), persistentvolumeclaims (pvc),
-             storageclasses (sc)
+             storageclasses (sc), ingresses (ing), ingressclasses,
+             networkpolicies (netpol), serviceaccounts (sa), roles,
+             clusterroles, rolebindings, clusterrolebindings
   kubectl get events [--field-selector involvedObject.name=<name>]
   kubectl describe <type> <name>   (any type above except endpoints, events, namespaces)
   kubectl create deployment <name> --image=<image> [--replicas=<n>]
@@ -186,13 +174,19 @@ Supported commands:
   kubectl create configmap <name> --from-literal=<key>=<value> ...
   kubectl create secret generic <name> --from-literal=<key>=<value> ...
   kubectl create quota <name> --hard=pods=3,requests.cpu=1,limits.memory=2Gi
+  kubectl create serviceaccount <name>
+  kubectl create role|clusterrole <name> --verb=get,list --resource=pods[,deployments.apps]
+                 [--resource-name=<name>]
+  kubectl create rolebinding <name> --role=<role>|--clusterrole=<role>
+                 [--user=<user>] [--group=<group>] [--serviceaccount=<ns>:<name>]
+  kubectl create clusterrolebinding <name> --clusterrole=<role> [--user, --group, --serviceaccount]
   kubectl run <name> --image=<image>
   kubectl expose <deployment|replicaset|pod> <name> --port=<p> [--target-port=<p>]
                  [--type=ClusterIP|NodePort|LoadBalancer] [--name=<service>]
   kubectl set image deployment/<name> <container>=<image>
   kubectl scale <deployment|replicaset|statefulset> <name> --replicas=<n>
   kubectl patch cronjob <name> -p '{"spec":{"suspend":true}}'   (or false)
-  kubectl label <type> <name> <key>=<value>... [<key>-] [--overwrite]
+  kubectl label <type> <name> <key>=<value>... [<key>-] [--overwrite]   (also namespaces)
   kubectl annotate <type> <name> <key>=<value>... [<key>-] [--overwrite]
   kubectl rollout status deployment/<name>
   kubectl rollout history deployment/<name> [--revision=<n>]
@@ -214,8 +208,15 @@ Supported commands:
                daemonset/<name>|statefulset/<name>> [-c <container>]
                [--previous] [--tail=<n>]
   kubectl exec <pod|<type>/<name>> [-c <container>] -- <command>
-      commands: cat <file>..., ls [dir], echo <text>,
+      commands: cat <file>..., ls [dir], echo <text>, env, printenv [NAME],
+                hostname, nslookup <name>, wget [-q] [-O -] [-T <s>] <url>,
+                curl [-s] [-S] [-m <s>] [-k] [-i] [-f] [-H <header>] <url>,
                 sh -c '<commands separated by ; && ||, with > or >> file>'
+  kubectl auth can-i <verb> <resource>[/<name>] [--subresource=<sub>]
+  kubectl auth can-i --list
+  curl [-s] [-k] [-i] [-H 'Host: <host>'] http(s)://<host>/<path>
+                           a request from your laptop, through the Ingress controller
+                           at 192.0.2.10 (hosts in Ingress rules resolve to it)
 
   ls                       list files
   cat <file>               print a file
@@ -260,8 +261,19 @@ Supported flags:
   --ignore-daemonsets      leave DaemonSet Pods in place (drain)
   --force                  also delete Pods without a controller (drain)
   --delete-emptydir-data   also delete Pods with emptyDir data (drain)
+  --as <user>              act as another user, e.g. jane or
+                           system:serviceaccount:<ns>:<name> (any command)
+  --as-group <group>       act with this group too, repeatable (with --as)
+  --list                   list everything the user may do (auth can-i)
+  --subresource <sub>      ask about a subresource such as log (auth can-i)
+  --verb, --resource, --resource-name
+                           the rule to create (create role, clusterrole)
+  --role, --clusterrole, --user, --group, --serviceaccount <ns>:<name>
+                           the role and subjects to bind, repeatable for subjects
+                           (create rolebinding, clusterrolebinding)
 
-Cluster-scoped types (nodes, namespaces, persistentvolumes, storageclasses) ignore -n.`;
+Cluster-scoped types (nodes, namespaces, persistentvolumes, storageclasses,
+ingressclasses, clusterroles, clusterrolebindings) ignore -n.`;
 
 const checkKey = (key: string) => LABEL_KEY_RE.test(key) || fail(`error: invalid label key "${key}"`);
 const checkValue = (value: string) => LABEL_VALUE_RE.test(value) || fail(`error: invalid label value "${value}"`);
@@ -293,7 +305,7 @@ function parsePort(value: string, flag: string): number {
 
 function parse(tokens: string[]): Parsed {
   if (tokens[0] === "help") tokens.unshift("kubectl");
-  if (tokens[0] !== "kubectl") fail(`command not found: ${tokens[0]}\nOnly kubectl commands are simulated. Type "kubectl help".`);
+  if (tokens[0] !== "kubectl") fail(`command not found: ${tokens[0]}\nOnly kubectl, curl, ls and cat are simulated. Type "kubectl help".`);
   const p: Parsed = {
     verb: tokens[1] ?? "help",
     args: [],
@@ -308,6 +320,9 @@ function parse(tokens: string[]): Parsed {
     force: false,
     ignoreDaemonsets: false,
     deleteEmptydirData: false,
+    asGroups: [],
+    list: false,
+    rbac: { verb: [], resource: [], "resource-name": [], role: [], clusterrole: [], user: [], group: [], serviceaccount: [] },
   };
 
   for (let i = 2; i < tokens.length; i++) {
@@ -453,6 +468,38 @@ function parse(tokens: string[]): Parsed {
       case "--delete-emptydir-data":
         p.deleteEmptydirData = true;
         break;
+      case "--as":
+        p.as = takeValue();
+        if (!IDENTITY_RE.test(p.as)) fail(`error: invalid --as "${p.as}"`);
+        break;
+      case "--as-group": {
+        const group = takeValue();
+        if (!IDENTITY_RE.test(group)) fail(`error: invalid --as-group "${group}"`);
+        p.asGroups.push(group);
+        break;
+      }
+      case "--list":
+        p.list = true;
+        break;
+      case "--subresource":
+        p.subresource = takeValue();
+        if (!/^[a-z]+$/.test(p.subresource)) fail(`error: invalid --subresource "${p.subresource}"`);
+        break;
+      case "--verb":
+      case "--resource":
+        p.rbac[flag.slice(2) as "verb" | "resource"].push(...takeValue().split(","));
+        break;
+      case "--resource-name":
+      case "--role":
+      case "--clusterrole":
+      case "--user":
+      case "--group":
+      case "--serviceaccount": {
+        const value = takeValue();
+        if (!IDENTITY_RE.test(value)) fail(`error: invalid ${flag} "${value}"`);
+        p.rbac[flag.slice(2) as keyof Parsed["rbac"]].push(value);
+        break;
+      }
       default:
         fail(`error: unknown flag: ${flag}\nType "kubectl help" for supported flags.`);
     }
@@ -473,6 +520,105 @@ function target(p: Parsed): { type: ResourceType; name?: string } {
   if (name !== undefined && !NAME_RE.test(name)) fail(`error: invalid resource name "${name}"`);
   if (p.args.length > (slashName ? 1 : 2)) fail(`error: unexpected argument "${p.args.at(-1)}"`);
   return { type, name };
+}
+
+/** The identity a command runs as: the admin, or whoever --as names. */
+function userOf(p: Parsed): User {
+  if (p.as === undefined) {
+    if (p.asGroups.length) fail("error: requesting groups or user-extra for  without impersonating a user");
+    return ADMIN;
+  }
+  return impersonate(p.as, p.asGroups);
+}
+
+/** The request a command sends for a type, in the API's terms. */
+function access(type: ResourceType, verb: string, namespace: string, name?: string, subresource?: string): Attributes {
+  const scoped = CLUSTER_SCOPED.has(type) || type === "Namespace";
+  return { verb, group: apiGroup(type), resource: PLURAL[type], subresource, namespace: scoped ? "" : namespace, name };
+}
+
+function requireAccess(c: Cluster, p: Parsed, a: Attributes, context = "") {
+  const u = userOf(p);
+  if (!authorize(c, u, a)) fail(`Error from server (Forbidden): ${context}${forbidden(u, a)}`);
+}
+
+/** Checks the main request of commands that act on one named type; create, run, expose and apply check per object. */
+function checkAccess(c: Cluster, p: Parsed) {
+  const need = (type: ResourceType, verb: string, name?: string, sub?: string, ns = p.namespace) => requireAccess(c, p, access(type, verb, ns, name, sub));
+  const named = (args: string[]) => target({ ...p, args });
+  switch (p.verb) {
+    case "get":
+    case "describe": {
+      const { type, name } = named(p.args);
+      return need(type, name ? "get" : "list", name, undefined, p.allNamespaces ? "" : p.namespace);
+    }
+    case "delete": {
+      if (p.filename) return;
+      const { type, name } = named(p.args);
+      return name ? need(type, "delete", name) : undefined;
+    }
+    case "scale": {
+      const { type, name } = named(p.args);
+      return need(type, "patch", name, "scale");
+    }
+    case "label":
+    case "annotate":
+    case "patch": {
+      const [first, second] = p.args;
+      const { type, name } = named(first?.includes("/") ? [first] : [first, second].filter(Boolean));
+      return need(type, "patch", name);
+    }
+    case "set":
+      return need("Deployment", "patch", named(p.args.slice(1, -1)).name);
+    case "rollout": {
+      const { type, name } = named(p.args.slice(1));
+      return need(type, ["status", "history"].includes(p.args[0]) ? "get" : "patch", name);
+    }
+    case "taint":
+      return need("Node", "patch", p.args[1]);
+    case "cordon":
+    case "uncordon":
+    case "drain":
+      return need("Node", "patch", p.args[0]);
+    case "logs":
+    case "exec": {
+      const ref = p.args[0] ?? "";
+      const pod = ref.includes("/") ? (["po", "pod", "pods"].includes(ref.split("/")[0]) ? ref.split("/")[1] : undefined) : ref;
+      return p.verb === "logs" ? need("Pod", "get", pod, "log") : need("Pod", "create", pod, "exec");
+    }
+    case "top": {
+      const resource = ["no", "node", "nodes"].includes(p.args[0]) ? "nodes" : "pods";
+      return requireAccess(c, p, { verb: "list", group: "metrics.k8s.io", resource, namespace: resource === "nodes" || p.allNamespaces ? "" : p.namespace });
+    }
+    case "expose": {
+      const { type, name } = named(p.args);
+      return need(type, "get", name);
+    }
+  }
+}
+
+/** kubectl auth can-i. A "no" is an answer, not an error. */
+function auth(c: Cluster, p: Parsed): string {
+  const [sub, verb, resource, extra] = p.args;
+  if (sub !== "can-i") fail("error: only kubectl auth can-i is supported in this simulator");
+  const u = userOf(p);
+  const ns = p.allNamespaces ? "" : p.namespace;
+  if (p.list) {
+    if (verb) fail("error: --list does not take a verb or resource");
+    return canIList(c, u, ns);
+  }
+  if (!verb || !resource) fail("error: you must specify two arguments: verb resource or verb resource/resourceName.\nSee 'kubectl auth can-i -h' for help and examples.");
+  if (extra) fail(`error: unexpected argument "${extra}"`);
+  if (resource.startsWith("/")) fail("error: non-resource URLs are not supported in this simulator");
+  const [base, name] = resource.split("/");
+  if (name !== undefined && !NAME_RE.test(name)) fail(`error: invalid resource name "${name}"`);
+  const r = apiResource(base);
+  const warnings = [
+    ...(VERBS.includes(verb) ? [] : [`Warning: verb '${verb}' is not a known verb`]),
+    ...(r ? [] : [`Warning: the server doesn't have a resource type '${base}'`]),
+  ];
+  const a: Attributes = { verb, group: r?.group ?? "", resource: r?.resource ?? base, subresource: p.subresource, namespace: r && !r.namespaced ? "" : ns, name };
+  return [...warnings, authorize(c, u, a) ? "yes" : "no"].join("\n");
 }
 
 function notFound(type: ResourceType, name: string): never {
@@ -508,9 +654,6 @@ const templateYaml = (t: PodTemplate) => ({
   metadata: { labels: t.labels, annotations: t.annotations },
   spec: { ...t.spec, containers: containerYaml(t.image, t.container) },
 });
-
-/** Pods get an IP once their sandbox exists, after ContainerCreating. */
-const hasIP = (p: Pod) => !!p.node && p.status !== "ContainerCreating" && p.status !== "Pending";
 
 const nonEmpty = (o: Labels) => (Object.keys(o).length ? o : undefined);
 
@@ -568,6 +711,9 @@ function manifest(c: Cluster, r: Resource, live = true) {
   if (r.kind === "ConfigMap") return { apiVersion: "v1", kind: "ConfigMap", metadata, data: r.data };
   if (r.kind === "Secret") return { apiVersion: "v1", kind: "Secret", metadata, type: r.type, data: r.data };
   if (r.kind === "StorageClass" || r.kind === "PersistentVolume" || r.kind === "PersistentVolumeClaim") return storageManifest(c, r, metadata, live);
+  if (r.kind === "Ingress" || r.kind === "IngressClass") return ingressManifest(c, r, metadata, live);
+  if (r.kind === "NetworkPolicy") return netpolManifest(r, metadata);
+  if (r.kind === "ServiceAccount" || r.kind === "Role" || r.kind === "ClusterRole" || r.kind === "RoleBinding" || r.kind === "ClusterRoleBinding") return rbacManifest(r, metadata);
   if (r.kind === "CronJob") return cronJobManifest(r, metadata, templateYaml(r.jobTemplate.template), live);
   const template = templateYaml(r.template);
   if (r.kind === "Job") return jobManifest(c, r, metadata, template, live);
@@ -624,14 +770,16 @@ function get(c: Cluster, p: Parsed): string {
   const nsLabel = allNamespaces || clusterScoped ? "" : ` in ${p.namespace} namespace`;
 
   if (type === "Namespace") {
-    if (p.showLabels || p.output === "wide") fail(`error: --show-labels and -o wide are not supported for ${PLURAL[type]} in this simulator`);
-    const picked = name ? c.namespaces.filter((n) => n === name) : c.namespaces;
+    let picked = name ? c.namespaces.filter((n) => n === name) : c.namespaces;
     if (name && !picked.length) notFound(type, name);
-    if (p.output) {
-      const items = picked.map((n) => ({ apiVersion: "v1", kind: type, metadata: { name: n } }));
+    if (p.selector) picked = picked.filter((n) => selects(namespaceLabels(c, n), p.selector!));
+    if (!picked.length) return "No resources found";
+    if (p.output === "yaml") {
+      const items = picked.map((n) => ({ apiVersion: "v1", kind: type, metadata: { name: n, labels: namespaceLabels(c, n) } }));
       return stringify(name ? items[0] : { apiVersion: "v1", kind: "List", items }).trimEnd();
     }
-    return table([["NAME", "STATUS", "AGE"], ...picked.map((n) => [n, "Active", age(c, -600)])]);
+    const rows = picked.map((n) => [n, "Active", age(c, -600), ...(p.showLabels ? [labelText(namespaceLabels(c, n))] : [])]);
+    return table([["NAME", "STATUS", "AGE", ...(p.showLabels ? ["LABELS"] : [])], ...rows]);
   }
 
   if (!allNamespaces && !clusterScoped && !name && !c.namespaces.includes(p.namespace)) return `No resources found${nsLabel}.`;
@@ -699,6 +847,17 @@ function get(c: Cluster, p: Parsed): string {
       case "PersistentVolume":
       case "PersistentVolumeClaim":
         return storageRow(c, r);
+      case "Ingress":
+      case "IngressClass":
+        return ingressRow(c, r);
+      case "NetworkPolicy":
+        return netpolRow(c, r);
+      case "ServiceAccount":
+      case "Role":
+      case "ClusterRole":
+      case "RoleBinding":
+      case "ClusterRoleBinding":
+        return rbacRow(c, r, wide);
     }
   });
   const workloadWide = wide ? ["CONTAINERS", "IMAGES", "SELECTOR"] : [];
@@ -718,6 +877,11 @@ function get(c: Cluster, p: Parsed): string {
     DaemonSet: [...DAEMONSET_HEADER, ...workloadWide],
     StatefulSet: [...STATEFULSET_HEADER, ...workloadWide.slice(0, 2)],
     ...STORAGE_HEADERS,
+    ...INGRESS_HEADERS,
+    NetworkPolicy: NETPOL_HEADER,
+    ...RBAC_HEADERS,
+    RoleBinding: [...RBAC_HEADERS.RoleBinding, ...(wide ? BINDING_WIDE_HEADER : [])],
+    ClusterRoleBinding: [...RBAC_HEADERS.ClusterRoleBinding, ...(wide ? BINDING_WIDE_HEADER : [])],
   }[type];
   const all = [header, ...rows];
   if (p.showLabels) all.forEach((row, i) => row.push(i ? labelText(items[i - 1].metadata.labels) : "LABELS"));
@@ -776,7 +940,7 @@ const tolerationText = (t: NonNullable<PodSpec["tolerations"]>[number]) =>
 
 function describePod(c: Cluster, r: Pod): string {
   const ctr = r.container;
-  const last = lastTermination(r);
+  const last = lastTermination(c, r);
   const multi = (items: string[]) => items.join("\n                ") || "<none>";
   return [
     pad([
@@ -831,11 +995,15 @@ function describe(c: Cluster, p: Parsed): string {
   const r = find(c, type, ns, name) ?? notFound(type, name);
   if (r.kind === "Node") return describeNode(c, r);
   if (r.kind === "StorageClass" || r.kind === "PersistentVolume" || r.kind === "PersistentVolumeClaim") return describeStorage(c, r);
+  // describe prints no Events section for RBAC objects.
+  if (r.kind === "Role" || r.kind === "ClusterRole" || r.kind === "RoleBinding" || r.kind === "ClusterRoleBinding") return describeRbac(r);
   const events = [...eventsOf(c, r), ...(r.kind === "Pod" ? kubeletEvents(c, r) : [])];
   return `${describeBody(c, r)}\n${eventsSection(c, events)}`;
 }
 
-function describeBody(c: Cluster, r: Exclude<Resource, Node | StorageClass | PersistentVolume | PersistentVolumeClaim>): string {
+type Described = Exclude<Resource, Node | StorageClass | PersistentVolume | PersistentVolumeClaim | Role | ClusterRole | RoleBinding | ClusterRoleBinding>;
+
+function describeBody(c: Cluster, r: Described): string {
   const head: [string, string][] = [
     ["Name", r.metadata.name],
     ["Namespace", r.metadata.namespace],
@@ -849,6 +1017,9 @@ function describeBody(c: Cluster, r: Exclude<Resource, Node | StorageClass | Per
   if (r.kind === "CronJob") return describeCronJob(c, r);
   if (r.kind === "DaemonSet") return describeDaemonSet(c, r);
   if (r.kind === "StatefulSet") return describeStatefulSet(c, r);
+  if (r.kind === "Ingress" || r.kind === "IngressClass") return describeIngress(c, r);
+  if (r.kind === "NetworkPolicy") return describeNetpol(r);
+  if (r.kind === "ServiceAccount") return describeRbac(r);
   if (r.kind === "LimitRange") {
     const rows = r.limits.flatMap((item) =>
       (["cpu", "memory"] as const)
@@ -941,6 +1112,7 @@ function deleteNamespace(c: Cluster, name: string): string {
   }
   if (!c.namespaces.includes(name)) notFound("Namespace", name);
   c.namespaces = c.namespaces.filter((n) => n !== name);
+  delete c.namespaceLabels[name];
   c.resources = c.resources.filter((r) => r.metadata.namespace !== name);
   return `namespace "${name}" deleted`;
 }
@@ -961,6 +1133,7 @@ const requireImage = (p: Parsed) => p.image ?? fail("error: required flag --imag
 function createResource(c: Cluster, p: Parsed, r: Resource, done = "created"): string {
   const ref = `${GROUP[r.kind]}/${r.metadata.name}`;
   if (p.dryRun) return p.output ? stringify(manifest(c, r, false)).trimEnd() : `${ref} ${done} (dry run)`;
+  requireAccess(c, p, access(r.kind, "create", r.metadata.namespace));
   requireNamespace(c, r.metadata.namespace);
   if (find(c, r.kind, r.metadata.namespace, r.metadata.name)) {
     fail(`Error from server (AlreadyExists): ${apiName(r.kind)} "${r.metadata.name}" already exists`);
@@ -1050,10 +1223,30 @@ function create(c: Cluster, p: Parsed): string {
     return createResource(c, p, secret);
   }
   const { type, name } = target(p);
-  if (!["Deployment", "Namespace", "ConfigMap", "ResourceQuota", "Job", "CronJob"].includes(type)) {
-    fail(`error: create ${PLURAL[type]} is not supported in this simulator, only deployments, namespaces, services, configmaps, secrets, quotas, jobs and cronjobs`);
+  const creatable = ["Deployment", "Namespace", "ConfigMap", "ResourceQuota", "Job", "CronJob", "ServiceAccount", "Role", "ClusterRole", "RoleBinding", "ClusterRoleBinding"];
+  if (!creatable.includes(type)) {
+    fail(`error: create ${PLURAL[type]} is not supported in this simulator, only deployments, namespaces, services, configmaps, secrets, quotas, jobs, cronjobs, serviceaccounts, roles, clusterroles, rolebindings and clusterrolebindings`);
   }
   if (!name) fail(`error: specify the name of the ${type.toLowerCase()} to create`);
+  const rbacFlags = Object.entries(p.rbac).filter(([, v]) => v.length).map(([k]) => `--${k}`);
+  const allowedFlags = type === "Role" || type === "ClusterRole" ? ["--verb", "--resource", "--resource-name"] : type === "RoleBinding" ? ["--role", "--clusterrole", "--user", "--group", "--serviceaccount"] : type === "ClusterRoleBinding" ? ["--clusterrole", "--user", "--group", "--serviceaccount"] : [];
+  const stray = rbacFlags.find((f) => !allowedFlags.includes(f));
+  if (stray) fail(`error: unknown flag: ${stray}`);
+  if (type === "ServiceAccount") return createResource(c, p, { kind: "ServiceAccount", metadata: meta(c, name, p.namespace, {}) });
+  if (type === "Role" || type === "ClusterRole") {
+    const rules = rulesFromFlags(p.rbac.verb, p.rbac.resource, p.rbac["resource-name"]);
+    if (typeof rules === "string") fail(rules);
+    const ns = type === "Role" ? p.namespace : "";
+    return createResource(c, p, { kind: type, metadata: meta(c, name, ns, {}), rules });
+  }
+  if (type === "RoleBinding" || type === "ClusterRoleBinding") {
+    const refs = [...p.rbac.role.map((n) => ({ kind: "Role" as const, name: n })), ...p.rbac.clusterrole.map((n) => ({ kind: "ClusterRole" as const, name: n }))];
+    if (refs.length !== 1) fail(type === "RoleBinding" ? "error: exactly one of clusterrole or role must be specified" : "error: required flag(s) \"clusterrole\" not set");
+    const subjects = subjectsFromFlags(p.rbac.user, p.rbac.group, p.rbac.serviceaccount);
+    if (typeof subjects === "string") fail(subjects);
+    const ns = type === "RoleBinding" ? p.namespace : "";
+    return createResource(c, p, { kind: type, metadata: meta(c, name, ns, {}), roleRef: refs[0], subjects });
+  }
   if (p.command && type !== "Job" && type !== "CronJob") fail("error: a command after -- is only supported with kubectl create job and create cronjob");
   if (p.from !== undefined && type !== "Job") fail("error: --from is only supported with kubectl create job");
   if (p.schedule !== undefined && type !== "CronJob") fail("error: --schedule is only supported with kubectl create cronjob");
@@ -1068,6 +1261,7 @@ function create(c: Cluster, p: Parsed): string {
     if (p.dryRun || p.image || p.replicas !== undefined) {
       fail("error: --dry-run, --image and --replicas are not supported with create namespace");
     }
+    requireAccess(c, p, access("Namespace", "create", ""));
     if (c.namespaces.includes(name)) fail(`Error from server (AlreadyExists): namespaces "${name}" already exists`);
     c.namespaces.push(name);
     return `namespace/${name} created`;
@@ -1196,14 +1390,19 @@ function setMetadata(c: Cluster, p: Parsed, field: "labels" | "annotations"): st
   const [first, ...rest] = p.args;
   const changes = first?.includes("/") ? rest : rest.slice(1);
   const { type, name } = target({ ...p, args: first?.includes("/") ? [first] : [first, rest[0]].filter(Boolean) });
-  if (type === "Namespace" || type === "Endpoints" || type === "Event") fail(`error: ${p.verb} ${PLURAL[type]} is not supported in this simulator`);
+  if (type === "Endpoints" || type === "Event" || (type === "Namespace" && field === "annotations")) fail(`error: ${p.verb} ${PLURAL[type]} is not supported in this simulator`);
   if (!name) fail(`error: specify the name of the resource to ${p.verb}`);
   const noun = field === "labels" ? "label" : "annotation";
   if (!changes.length) fail(`error: at least one ${noun} update is required, e.g. key=value or key-`);
-  const ns = nsOf(type, p);
-  requireNamespace(c, ns);
-  const r = find(c, type, ns, name) ?? notFound(type, name);
-  const values = r.metadata[field];
+  let values: Labels;
+  if (type === "Namespace") {
+    if (!c.namespaces.includes(name)) notFound(type, name);
+    values = c.namespaceLabels[name] ??= {};
+  } else {
+    const ns = nsOf(type, p);
+    requireNamespace(c, ns);
+    values = (find(c, type, ns, name) ?? notFound(type, name)).metadata[field];
+  }
   for (const change of changes) {
     if (change.endsWith("-") && !change.includes("=")) {
       const key = change.slice(0, -1);
@@ -1398,6 +1597,20 @@ function applied(r: Resource) {
       return { capacity: r.capacity, accessModes: r.accessModes, reclaimPolicy: r.reclaimPolicy, storageClassName: r.storageClassName, hostPath: r.hostPath };
     case "PersistentVolumeClaim":
       return { accessModes: r.accessModes, storage: r.storage, storageClassName: r.storageClassName, defaultedClass: r.defaultedClass };
+    case "Ingress":
+      return { ingressClassName: r.ingressClassName, defaultBackend: r.defaultBackend, rules: r.rules, tls: r.tls };
+    case "IngressClass":
+      return { controller: r.controller };
+    case "NetworkPolicy":
+      return { podSelector: r.podSelector, policyTypes: r.policyTypes, ingress: r.ingress, egress: r.egress };
+    case "ServiceAccount":
+      return { automountServiceAccountToken: r.automountServiceAccountToken };
+    case "Role":
+    case "ClusterRole":
+      return { rules: r.rules };
+    case "RoleBinding":
+    case "ClusterRoleBinding":
+      return { roleRef: r.roleRef, subjects: r.subjects };
   }
 }
 
@@ -1441,6 +1654,14 @@ function immutableChange(c: Cluster, existing: Resource, r: Resource): string | 
       }
       return null;
     }
+    case "RoleBinding":
+    case "ClusterRoleBinding": {
+      const ref = (r as RoleBinding | ClusterRoleBinding).roleRef;
+      if (same(existing.roleRef, ref)) return null;
+      return invalid(existing.kind, `roleRef: Invalid value: rbac.RoleRef{APIGroup:"${RBAC_GROUP}", Kind:"${ref.kind}", Name:"${ref.name}"}: cannot change roleRef`);
+    }
+    case "IngressClass":
+      return existing.controller === (r as typeof existing).controller ? null : invalid("IngressClass", "spec.controller: Invalid value: \"" + (r as typeof existing).controller + "\": field is immutable");
     default:
       return null;
   }
@@ -1517,6 +1738,8 @@ function toNode(c: Cluster, m: Extract<Manifest, { kind: "Node" }>): Node {
   n.unschedulable = m.spec?.unschedulable ?? false;
   return n;
 }
+
+const manifestNamespace = (m: Manifest, fallback: string) => (m.kind === "Namespace" ? "" : namespaceOf(m, fallback));
 
 const namespaceOf = (m: Exclude<Manifest, { kind: "Namespace" }>, fallback: string) =>
   CLUSTER_SCOPED.has(m.kind) ? "" : ((m.metadata as { namespace?: string }).namespace ?? fallback);
@@ -1633,6 +1856,50 @@ function toResource(c: Cluster, m: Exclude<Manifest, { kind: "Namespace" }>, nam
         ...claimClass(c, m.spec.storageClassName),
         phase: "Pending",
       };
+    case "Ingress": {
+      const backend = (b: { service: { name: string; port: { number?: number; name?: string } } }): IngressBackend => structuredClone({ service: b.service });
+      const s = m.spec;
+      const ing: Ingress = {
+        kind: "Ingress",
+        metadata: metadata(),
+        rules: (s.rules ?? []).map((r) => ({
+          ...(r.host !== undefined && { host: r.host }),
+          paths: (r.http?.paths ?? []).map((x) => ({ path: x.path ?? "/", pathType: x.pathType, backend: backend(x.backend) })),
+        })),
+        tls: (s.tls ?? []).map((t) => ({ hosts: [...(t.hosts ?? [])], ...(t.secretName && { secretName: t.secretName }) })),
+      };
+      if (s.ingressClassName !== undefined) ing.ingressClassName = s.ingressClassName;
+      if (s.defaultBackend) ing.defaultBackend = backend(s.defaultBackend);
+      return ing;
+    }
+    case "IngressClass":
+      return { kind: "IngressClass", metadata: metadata(), controller: m.spec.controller };
+    case "NetworkPolicy": {
+      const s = structuredClone(m.spec);
+      const np: NetworkPolicy = {
+        kind: "NetworkPolicy",
+        metadata: metadata(),
+        podSelector: s.podSelector,
+        // The API server defaults policyTypes: Ingress always, Egress when egress rules are given.
+        policyTypes: s.policyTypes ?? ["Ingress", ...(s.egress ? ["Egress" as const] : [])],
+        ingress: (s.ingress ?? []).map((r) => ({ peers: r.from, ports: r.ports })),
+        egress: (s.egress ?? []).map((r) => ({ peers: r.to, ports: r.ports })),
+      };
+      return np;
+    }
+    case "ServiceAccount":
+      return { kind: "ServiceAccount", metadata: metadata(), ...(m.automountServiceAccountToken !== undefined && { automountServiceAccountToken: m.automountServiceAccountToken }) };
+    case "Role":
+    case "ClusterRole":
+      return { kind: m.kind, metadata: metadata(), rules: structuredClone(m.rules ?? []) };
+    case "RoleBinding":
+    case "ClusterRoleBinding": {
+      if (m.kind === "ClusterRoleBinding" && m.roleRef.kind !== "ClusterRole") {
+        fail(`The ClusterRoleBinding "${m.metadata.name}" is invalid: roleRef.kind: Unsupported value: "${m.roleRef.kind}": supported values: "ClusterRole"`);
+      }
+      const subjects = (m.subjects ?? []).map(({ kind, name, namespace }) => ({ kind, name, ...(namespace !== undefined && { namespace }) }));
+      return { kind: m.kind, metadata: metadata(), roleRef: { kind: m.roleRef.kind, name: m.roleRef.name }, subjects };
+    }
   }
   if (m.spec.replicas > MAX_REPLICAS) fail(`error: this simulator supports at most ${MAX_REPLICAS} replicas`);
   checkMounts(m.kind, m.metadata.name, m.spec.template.spec, "spec.template.spec.");
@@ -1673,13 +1940,23 @@ function apply(c: Cluster, p: Parsed): string {
     if (m.kind === "Namespace") {
       const name = m.metadata.name;
       const exists = draft.namespaces.includes(name);
+      // Labels set with kubectl label stay, like a three-way merge would keep them.
+      const labels = { ...draft.namespaceLabels[name], ...m.metadata.labels };
+      const changed = !exists || canonical(draft.namespaceLabels[name] ?? {}) !== canonical(labels);
+      if (!p.dryRun) requireAccess(draft, p, access("Namespace", exists ? "patch" : "create", "", exists ? name : undefined), exists ? "" : `error when creating "${p.filename}": `);
       if (!exists) draft.namespaces.push(name);
-      return { ref: `namespace/${name}`, result: exists ? "unchanged" : "created", yaml: { apiVersion: "v1", kind: "Namespace", metadata: { name } } };
+      draft.namespaceLabels[name] = labels;
+      const result = !exists ? "created" : changed ? "configured" : "unchanged";
+      return { ref: `namespace/${name}`, result, yaml: { apiVersion: "v1", kind: "Namespace", metadata: { name, labels: namespaceLabels(draft, name) } } };
     }
     const r = toResource(draft, m, namespaceOf(m, p.namespace));
     const { name, namespace } = r.metadata;
     requireNamespace(draft, namespace);
     const existing = find(draft, r.kind, namespace, name);
+    if (!p.dryRun) {
+      const verb = existing ? "patch" : "create";
+      requireAccess(draft, p, access(r.kind, verb, namespace, existing ? name : undefined), existing ? "" : `error when creating "${p.filename}": `);
+    }
     if (r.kind === "Service") assignServiceFields(draft, r, existing as Service | undefined);
     // Node labels set by the kubelet stay, like a three-way merge would keep them.
     if (r.kind === "Node" && existing) r.metadata.labels = { ...existing.metadata.labels, ...m.metadata.labels };
@@ -1728,6 +2005,7 @@ function deleteFromFile(c: Cluster, p: Parsed): string {
   let failed = false;
   for (const m of readManifests(c, p)) {
     try {
+      requireAccess(c, p, access(m.kind, "delete", manifestNamespace(m, p.namespace), m.metadata.name));
       lines.push(
         m.kind === "Namespace"
           ? deleteNamespace(c, m.metadata.name)
@@ -1745,7 +2023,9 @@ function deleteFromFile(c: Cluster, p: Parsed): string {
 
 function execute(c: Cluster, p: Parsed): string {
   const only = (allowed: boolean, message: string) => allowed || fail(`error: ${message}`);
-  if (p.allNamespaces) only(p.verb === "get" || p.verb === "top", "-A is only supported with kubectl get and top");
+  if (p.allNamespaces) only(p.verb === "get" || p.verb === "top" || p.verb === "auth", "-A is only supported with kubectl get, top and auth can-i");
+  if (p.list || p.subresource !== undefined) only(p.verb === "auth", "--list and --subresource are only supported with kubectl auth can-i");
+  if (Object.values(p.rbac).some((v) => v.length)) only(p.verb === "create", "--verb, --resource, --resource-name, --role, --clusterrole, --user, --group and --serviceaccount are only supported with kubectl create role, clusterrole, rolebinding and clusterrolebinding");
   if (p.selector) only(p.verb === "get", "-l is only supported with kubectl get");
   if (p.showLabels) only(p.verb === "get", "--show-labels is only supported with kubectl get");
   if (p.dryRun) only(["create", "run", "expose", "apply"].includes(p.verb), "--dry-run=client is only supported with kubectl create, run, expose and apply");
@@ -1766,10 +2046,13 @@ function execute(c: Cluster, p: Parsed): string {
   if (p.fieldSelector) only(p.verb === "get", "--field-selector is only supported with kubectl get events");
   if (p.force || p.ignoreDaemonsets || p.deleteEmptydirData) only(p.verb === "drain", "--force, --ignore-daemonsets and --delete-emptydir-data are only supported with kubectl drain");
   if (p.revision !== undefined || p.toRevision !== undefined) only(p.verb === "rollout", "--revision and --to-revision are only supported with kubectl rollout");
+  if (p.as !== undefined || p.asGroups.length) checkAccess(c, p);
   switch (p.verb) {
     case "help":
     case "--help":
       return HELP;
+    case "auth":
+      return auth(c, p);
     case "get":
       return get(c, p);
     case "describe":
@@ -1858,6 +2141,11 @@ function shell(c: Cluster, input: string, redirected: boolean): string {
   const tokens = tokenize(input);
   if (!tokens.length) fail("error: missing command before >");
   const [cmd, ...args] = tokens;
+  if (cmd === "curl") {
+    const { out, code } = laptopCurl(c, args);
+    if (code) fail(out.replace(/\n$/, ""));
+    return out.replace(/\n$/, "");
+  }
   if (cmd !== "ls" && cmd !== "cat") return execute(c, parse(tokens));
   if (redirected) fail("error: output redirect is only supported for kubectl commands");
   if (cmd === "ls") {

@@ -3,7 +3,8 @@ import { parse as parseYaml } from "yaml";
 import { createCluster, find, list, replicaSetsOf, run, type Cluster, type Fixture } from "@/lib/simulator";
 
 /** Resources besides the built-in default StorageClass. */
-const added = (c: Cluster) => c.resources.filter((r) => r.kind !== "StorageClass");
+/** Objects created by commands; built-in ones (StorageClass, IngressClass, RBAC, default ServiceAccounts) have named uids. */
+const added = (c: Cluster) => c.resources.filter((r) => /^\d+$/.test(r.metadata.uid));
 
 const web = (extra: Fixture = {}) =>
   createCluster({ deployments: [{ name: "web", replicas: 2, image: "nginx:1.27", labels: { app: "web" } }], ...extra });

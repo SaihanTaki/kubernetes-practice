@@ -157,6 +157,7 @@ const podSpec = z.object({
   containers: z.array(container).min(1),
   volumes: z.array(volume).refine(uniqueNames, "volume names must be unique").optional(),
   serviceAccountName: name.optional(),
+  automountServiceAccountToken: z.boolean().optional(),
   restartPolicy: z.enum(["Always", "OnFailure", "Never"]).optional(),
   nodeName: name.optional(),
   nodeSelector: labels.optional(),
@@ -259,9 +260,70 @@ const jobSpec = z.object({
 
 const clusterMetadata = z.object({ name, labels: labels.optional(), annotations: annotations.optional() });
 
+const dnsName = /^[a-z0-9]([-a-z0-9]*[a-z0-9])?(\.[a-z0-9]([-a-z0-9]*[a-z0-9])?)*$/;
+const ingressHost = z
+  .string()
+  .refine((h) => dnsName.test(h.replace(/^\*\./, "")), "must be a DNS name, optionally starting with *.")
+  .refine((h) => !/^[\d.]+$/.test(h), "must be a DNS name, not an IP address");
+
+const ingressBackend = z.object({
+  service: z.object({
+    name,
+    port: z.object({ number: port.optional(), name: portName.optional() }).refine((p) => exactlyOne({ a: p.number, b: p.name }), "must specify exactly one of number or name"),
+  }),
+});
+
+const ingressSpec = z
+  .object({
+    ingressClassName: name.optional(),
+    defaultBackend: ingressBackend.optional(),
+    tls: z.array(z.object({ hosts: z.array(ingressHost).optional(), secretName: name.optional() })).optional(),
+    rules: z
+      .array(
+        z.object({
+          host: ingressHost.optional(),
+          http: z
+            .object({
+              paths: z
+                .array(z.object({ path: z.string().startsWith("/").optional(), pathType: z.enum(["Prefix", "Exact", "ImplementationSpecific"]), backend: ingressBackend }))
+                .min(1)
+                .refine((ps) => ps.every((p) => p.pathType === "ImplementationSpecific" || p.path !== undefined), "path is required for pathType Prefix and Exact"),
+            })
+            .optional(),
+        }),
+      )
+      .optional(),
+  })
+  .refine((s) => s.defaultBackend || s.rules?.length, "either `defaultBackend` or `rules` must be specified");
+
+const cidr = z.string().regex(/^\d{1,3}(\.\d{1,3}){3}\/\d{1,2}$/, "must be a CIDR such as 10.0.0.0/16");
+const networkPeer = z
+  .object({ podSelector: labelSelector.optional(), namespaceSelector: labelSelector.optional(), ipBlock: z.object({ cidr, except: z.array(cidr).optional() }).optional() })
+  .refine((p) => (p.ipBlock ? !p.podSelector && !p.namespaceSelector : p.podSelector || p.namespaceSelector), "must specify ipBlock alone, or podSelector and/or namespaceSelector");
+const networkPort = z.object({ protocol: z.enum(["TCP", "UDP", "SCTP"]).optional(), port: portRef.optional() });
+
+const policyRule = z
+  .object({
+    apiGroups: z.array(z.string()).optional(),
+    resources: z.array(z.string().min(1)).optional(),
+    verbs: z.array(z.enum(["get", "list", "watch", "create", "update", "patch", "delete", "deletecollection", "use", "bind", "escalate", "impersonate", "proxy", "*"])).min(1),
+    resourceNames: z.array(z.string().min(1)).optional(),
+    nonResourceURLs: z.array(z.string().startsWith("/").or(z.literal("*"))).optional(),
+  })
+  .refine((r) => (r.nonResourceURLs?.length ? !r.resources?.length : !!r.resources?.length && r.apiGroups !== undefined), "a rule needs apiGroups and resources, or only nonResourceURLs");
+
+const subject = z.object({
+  kind: z.enum(["User", "Group", "ServiceAccount"]),
+  name: z.string().min(1),
+  namespace: name.optional(),
+  apiGroup: z.string().optional(),
+});
+const roleRef = z.object({ apiGroup: z.literal("rbac.authorization.k8s.io"), kind: z.enum(["Role", "ClusterRole"]), name });
+const rbacVersion = z.literal("rbac.authorization.k8s.io/v1");
+
 /** A deliberately small subset of the real Kubernetes schemas, covering what the chapters teach. */
 export const manifestSchema = z.discriminatedUnion("kind", [
-  z.object({ apiVersion: z.literal("v1"), kind: z.literal("Namespace"), metadata: z.object({ name }) }),
+  z.object({ apiVersion: z.literal("v1"), kind: z.literal("Namespace"), metadata: z.object({ name, labels: labels.optional(), annotations: annotations.optional() }) }),
   z.object({ apiVersion: z.literal("v1"), kind: z.literal("Pod"), metadata, spec: podSpec }),
   z.object({
     apiVersion: z.literal("v1"),
@@ -361,6 +423,38 @@ export const manifestSchema = z.discriminatedUnion("kind", [
     }),
   }),
   z.object({ apiVersion: z.literal("v1"), kind: z.literal("PersistentVolumeClaim"), metadata, spec: claimSpec }),
+  z.object({ apiVersion: z.literal("networking.k8s.io/v1"), kind: z.literal("Ingress"), metadata, spec: ingressSpec }),
+  z.object({
+    apiVersion: z.literal("networking.k8s.io/v1"),
+    kind: z.literal("IngressClass"),
+    metadata: clusterMetadata,
+    spec: z.object({ controller: z.string().min(1) }),
+  }),
+  z.object({
+    apiVersion: z.literal("networking.k8s.io/v1"),
+    kind: z.literal("NetworkPolicy"),
+    metadata,
+    spec: z.object({
+      podSelector: labelSelector,
+      policyTypes: z.array(z.enum(["Ingress", "Egress"])).optional(),
+      ingress: z.array(z.object({ from: z.array(networkPeer).optional(), ports: z.array(networkPort).optional() })).optional(),
+      egress: z.array(z.object({ to: z.array(networkPeer).optional(), ports: z.array(networkPort).optional() })).optional(),
+    }),
+  }),
+  z.object({ apiVersion: z.literal("v1"), kind: z.literal("ServiceAccount"), metadata, automountServiceAccountToken: z.boolean().optional() }),
+  z.object({ apiVersion: rbacVersion, kind: z.literal("Role"), metadata, rules: z.array(policyRule).optional() }),
+  z.object({ apiVersion: rbacVersion, kind: z.literal("ClusterRole"), metadata: clusterMetadata, rules: z.array(policyRule).optional() }),
+  z.object({ apiVersion: rbacVersion, kind: z.literal("RoleBinding"), metadata, subjects: z.array(subject).optional(), roleRef }),
+  z.object({
+    apiVersion: rbacVersion,
+    kind: z.literal("ClusterRoleBinding"),
+    metadata: clusterMetadata,
+    subjects: z
+      .array(subject)
+      .refine((ss) => ss.every((x) => x.kind !== "ServiceAccount" || x.namespace), "a ServiceAccount subject needs a namespace")
+      .optional(),
+    roleRef,
+  }),
   z.object({ apiVersion: z.literal("v1"), kind: z.literal("ConfigMap"), metadata, data: z.record(configKey, z.string()).optional() }),
   z.object({
     apiVersion: z.literal("v1"),

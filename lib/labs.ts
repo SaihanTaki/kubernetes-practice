@@ -1,4 +1,12 @@
 import {
+  canI,
+  impersonate,
+  laptopHttpStatus,
+  podHttpStatus,
+  processEnv,
+  route,
+  served,
+  type HttpStatus,
   CLUSTER_SCOPED,
   daemonSetStatus,
   jobCounts,
@@ -25,6 +33,7 @@ import {
   type ServiceType,
   type TaintEffect,
 } from "@/lib/simulator";
+
 
 /** Owners whose Pods the pod-* validators can look at. A Deployment covers the Pods of all its ReplicaSets. */
 export type PodOwnerType = "Deployment" | "ReplicaSet" | "StatefulSet" | "DaemonSet" | "Job";
@@ -87,7 +96,27 @@ export type Validator =
    * The text of a file inside every matching Pod (at least one), trailing newline ignored (echo adds one).
    * `expectedValue: null` means the file does not exist.
    */
-  | ({ kind: "file-content"; path: string; expectedValue: string | null } & PodTarget);
+  | ({ kind: "file-content"; path: string; expectedValue: string | null } & PodTarget)
+  /**
+   * GET url from a Pod (fromPod, or the first running Pod of fromOwnerType/fromOwnerName), or with neither from the
+   * learner's laptop through the Ingress controller (https without certificate checks, like curl -k).
+   * expectedStatus: an HTTP status, "timeout", "refused", "dns", or "connected" (a TCP connection opened, any response).
+   */
+  | {
+      kind: "http-get";
+      fromPod?: string;
+      fromOwnerType?: PodOwnerType;
+      fromOwnerName?: string;
+      url: string;
+      expectedStatus: HttpStatus;
+      namespace?: string;
+    }
+  /** kubectl auth can-i verb resource[/name] --as=as; resource may name a subresource, e.g. pods/log. */
+  | { kind: "can-i"; verb: string; resource: string; as: string; expectedValue: boolean; namespace?: string; name?: string }
+  /** The Service the Ingress sends host + path to (rules, then its defaultBackend); null when nothing matches. */
+  | { kind: "ingress-backend"; ingressName: string; host?: string; path: string; expectedService: string | null; namespace?: string }
+  /** A variable in the environment of every matching Pod (at least one); null means unset. */
+  | ({ kind: "env-value"; envName: string; expectedValue: string | null } & PodTarget);
 
 export type LabDefinition = {
   id: string;
@@ -218,6 +247,25 @@ export function check(c: Cluster, v: Validator): boolean {
     case "pv-status": {
       const pv = find(c, "PersistentVolume", "", v.pvName);
       return !!pv && !pv.terminating && pv.phase === v.expectedValue;
+    }
+    case "http-get": {
+      if (v.fromPod === undefined && v.fromOwnerType === undefined) return laptopHttpStatus(c, v.url, v.expectedStatus);
+      const from = targetPods(c, { podName: v.fromPod, ownerType: v.fromOwnerType, ownerName: v.fromOwnerName, namespace: v.namespace })
+        .filter((p) => p.status === "Running")
+        .sort((a, b) => (a.metadata.name < b.metadata.name ? -1 : 1))[0];
+      return !!from && podHttpStatus(c, from, v.url, v.expectedStatus);
+    }
+    case "can-i":
+      return canI(c, impersonate(v.as, []), v.verb, v.resource, ns, v.name) === v.expectedValue;
+    case "ingress-backend": {
+      const ing = find(c, "Ingress", ns, v.ingressName);
+      if (!ing || !served(c, ing)) return false;
+      return (route([ing], v.host ?? "", v.path)?.backend.service.name ?? null) === v.expectedService;
+    }
+    case "env-value": {
+      const pods = targetPods(c, v);
+      const value = (p: Pod) => processEnv(c, p).findLast(([k]) => k === v.envName)?.[1] ?? null;
+      return pods.length > 0 && pods.every((p) => value(p) === v.expectedValue);
     }
     case "file-content": {
       const pods = targetPods(c, v);

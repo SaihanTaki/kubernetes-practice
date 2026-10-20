@@ -1,4 +1,5 @@
 import { isFinished, list } from "./cluster";
+import { serviceAccountError } from "./rbac";
 import { formatQuantity, parseQuantity, type ResourceName } from "./quantity";
 import type { Cluster, Container, LimitRangeItem, Pod, Resource, ResourceQuota } from "./types";
 
@@ -122,8 +123,8 @@ function quotas(c: Cluster, r: Resource): string | null {
 
 /**
  * Admission for a new object, in the API server's order: LimitRanger (which may fill in a Pod's
- * resources) then ResourceQuota. Returns why it is forbidden, or null.
+ * resources), ServiceAccount, then ResourceQuota. Returns why it is forbidden, or null.
  */
 export function admit(c: Cluster, r: Resource): string | null {
-  return (r.kind === "Pod" && limitRanges(c, r)) || quotas(c, r);
+  return (r.kind === "Pod" && (limitRanges(c, r) || serviceAccountError(c, r))) || quotas(c, r);
 }

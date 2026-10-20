@@ -1,5 +1,5 @@
 import { age, fail, table, type Parsed } from "./cli";
-import { configError, crashes, find, hash, isReady, list, mountError, podsOfOwner, probeFailure, pullError, SECONDS_PER_COMMAND } from "./cluster";
+import { configError, containerEnv, crashes, find, hash, isReady, list, mountError, podsOfOwner, probeFailure, pullError, SECONDS_PER_COMMAND } from "./cluster";
 import { imageInfo } from "./images";
 import { MI, parseCpu, parseMemory } from "./quantity";
 import { runProgram } from "./shell";
@@ -27,7 +27,7 @@ export function kubeletEvents(c: Cluster, p: Pod): ClusterEvent[] {
       events.push(["Warning", "Unhealthy", `${kind} probe failed: ${why}`]);
       if (kind !== "Readiness") events.push(["Normal", "Killing", `Container ${name} failed ${kind.toLowerCase()} probe, will be restarted`]);
     }
-    if (p.status === "CrashLoopBackOff" && crashes(p)) {
+    if (p.status === "CrashLoopBackOff" && crashes(c, p)) {
       events.push(["Warning", "BackOff", `Back-off restarting failed container ${name} in pod ${p.metadata.name}`]);
     }
   }
@@ -113,7 +113,7 @@ export function logs(c: Cluster, p: Parsed): string {
   if (waiting) fail(`Error from server (BadRequest): container "${ctr}" in pod "${pod.metadata.name}" is waiting to start: ${waiting}`);
   if (p.previous && !pod.restarts) fail(`Error from server (BadRequest): previous terminated container "${ctr}" in pod "${pod.metadata.name}" not found`);
   const info = imageInfo(pod.image);
-  let lines = runProgram(pod.image, pod.container)?.logs ?? info.logs?.(pod, info.tag) ?? [];
+  let lines = runProgram(pod.image, pod.container)?.logs ?? info.logs?.(pod, info.tag, containerEnv(c, pod)) ?? [];
   if (p.tail !== undefined) lines = p.tail ? lines.slice(-p.tail) : [];
   return [...(note ? [note] : []), ...lines].join("\n");
 }

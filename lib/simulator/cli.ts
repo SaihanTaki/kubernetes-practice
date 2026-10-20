@@ -47,6 +47,15 @@ export type Parsed = {
   from?: string;
   /** patch -p */
   patch?: string;
+  /** --as and --as-group: the identity to impersonate. */
+  as?: string;
+  asGroups: string[];
+  /** auth can-i --list */
+  list: boolean;
+  /** auth can-i --subresource */
+  subresource?: string;
+  /** Repeatable create role / rolebinding flags, by name without dashes; comma lists are split for verb and resource. */
+  rbac: Record<"verb" | "resource" | "resource-name" | "role" | "clusterrole" | "user" | "group" | "serviceaccount", string[]>;
 };
 
 export function selects(labels: Labels, reqs: Requirement[]): boolean {
@@ -85,6 +94,12 @@ export const pad = (pairs: [string, string | undefined][]) =>
 /** "5s", or "5s (x3 over 20s)" for a repeated event, as describe and get events show it. */
 export const eventAge = (c: Cluster, e: ClusterEvent) =>
   e.count > 1 ? `${age(c, e.lastSeen)} (x${e.count} over ${age(c, e.firstSeen)})` : age(c, e.lastSeen);
+
+/** Key-value lines aligned like kubectl's tabwriter: every value starts two spaces after the longest key. */
+export function aligned(pairs: [string, string][]): string {
+  const width = Math.max(...pairs.map(([k]) => k.length)) + 3;
+  return pairs.map(([k, v]) => `${`${k}:`.padEnd(width)}${v}`.trimEnd()).join("\n");
+}
 
 /** The Events section that ends describe output. */
 export function eventsSection(c: Cluster, events: ClusterEvent[]): string {

@@ -15,16 +15,21 @@ const logTime = (clock: number) => timestamp(clock).replace(/-/g, "/").replace("
 export type ImageInfo = {
   tags: string[];
   http?: number;
+  /** Paths served with 200; everything else on the HTTP port is 404. */
   paths?: string[];
+  /** Path prefixes (whole segments) served with 200 as well. */
+  prefixes?: string[];
   tcp?: number;
   /** Tags whose container exits with an error right after starting. */
   crashes?: string[];
+  /** A variable the process exits without (exit code 1). */
+  needsEnv?: string;
   /** Memory the process uses once running, in MiB. */
   memoryMi: number;
   /** Fixed CPU use in millicores; idle images use 1m-5m. */
   cpuMilli?: number;
   /** Log lines of the current (or, for crashes, each) container run. */
-  logs?: (p: Pod, tag: string) => string[];
+  logs?: (p: Pod, tag: string, env: Record<string, string>) => string[];
 };
 
 const started = (p: Pod) => p.metadata.createdAt + 5;
@@ -70,9 +75,16 @@ export const IMAGES: Record<string, ImageInfo> = {
     tags: ["1.0", "1.1", "2.0", "latest"],
     http: 8080,
     paths: ["/", "/healthz", "/ready"],
+    prefixes: ["/api"],
     crashes: ["2.0"],
     memoryMi: 100,
     logs: (_, tag) => (tag === "2.0" ? ["fatal: config file /etc/api/config.yaml not found"] : ["listening on :8080"]),
+  },
+  "example/worker": {
+    tags: ["1.0", "1.1"],
+    needsEnv: "QUEUE_URL",
+    memoryMi: 40,
+    logs: (_, __, env) => (Object.hasOwn(env, "QUEUE_URL") ? [`connected to ${env.QUEUE_URL}`] : ["error: QUEUE_URL is not set"]),
   },
   "example/memhog": {
     tags: ["1.0"],
@@ -91,6 +103,10 @@ export const IMAGES: Record<string, ImageInfo> = {
     },
   },
 };
+
+/** Whether the image answers this path with 200 on its HTTP port. */
+export const servesPath = (info: Pick<ImageInfo, "paths" | "prefixes">, path: string) =>
+  !!info.paths?.includes(path) || !!info.prefixes?.some((x) => path === x || path.startsWith(`${x}/`));
 
 export function parseImage(image: string) {
   const colon = image.lastIndexOf(":");

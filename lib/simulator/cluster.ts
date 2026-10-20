@@ -2,10 +2,11 @@ import { admit, withDefaultRequests } from "./admission";
 import { reconcileCronJob, reconcileJob } from "./batch";
 import { recordEvent } from "./events";
 import { collectFiles, writeFile } from "./files";
-import { imageInfo } from "./images";
+import { imageInfo, servesPath } from "./images";
 import { MI, parseMemory, parseQuantity } from "./quantity";
 import { evictUntolerated, schedule } from "./scheduler";
 import { reconcileDaemonSet, reconcileStatefulSet } from "./sets";
+import { ensureDefaultServiceAccounts } from "./rbac";
 import { runProgram } from "./shell";
 import { reconcileStorage } from "./storage";
 import type {
@@ -31,7 +32,9 @@ export const WORKERS = ["worker-1", "worker-2"];
 export const CONTROL_PLANE = "control-plane";
 export const CONTROL_PLANE_TAINT = "node-role.kubernetes.io/control-plane";
 /** Kinds whose objects have no namespace (metadata.namespace is ""). */
-export const CLUSTER_SCOPED: ReadonlySet<string> = new Set(["Node", "Namespace", "PersistentVolume", "StorageClass"]);
+export const CLUSTER_SCOPED: ReadonlySet<string> = new Set([
+  "Node", "Namespace", "PersistentVolume", "StorageClass", "IngressClass", "ClusterRole", "ClusterRoleBinding",
+]);
 export const SECONDS_PER_COMMAND = 5;
 export const REVISION = "deployment.kubernetes.io/revision";
 export const CHANGE_CAUSE = "kubernetes.io/change-cause";
@@ -168,6 +171,9 @@ export function podIP(p: Pod): string {
   return `10.244.${Number(p.node.match(/-(\d+)$/)?.[1] ?? 0)}.${(Number(p.metadata.uid) % 250) + 2}`;
 }
 
+/** Pods get an IP once their sandbox exists, after ContainerCreating. */
+export const hasIP = (p: Pod) => !!p.node && p.status !== "ContainerCreating" && p.status !== "Pending";
+
 // --- Container runtime ---
 
 export const pullError = (image: string) =>
@@ -189,7 +195,7 @@ export function probeFailure(p: Pod, probe?: Probe): string | null {
   if (probe.tcpSocket) return port === info.http || port === info.tcp ? null : refused;
   const path = probe.httpGet!.path ?? "/";
   const url = `Get "http://${ip}:${port}${path}"`;
-  if (port === info.http) return info.paths!.includes(path) ? null : "HTTP probe failed with statuscode: 404";
+  if (port === info.http) return servesPath(info, path) ? null : "HTTP probe failed with statuscode: 404";
   if (port === info.tcp) return `${url}: net/http: HTTP/1.x transport connection broken: malformed HTTP response`;
   return `${url}: ${refused}`;
 }
@@ -227,6 +233,36 @@ export function mountError(c: Cluster, p: Pod): string | null {
   return null;
 }
 
+/** The variables the container's env and envFrom define, resolved; references that cannot be resolved are left out. */
+export function containerEnv(c: Cluster, p: Pod): Record<string, string> {
+  const ns = p.metadata.namespace;
+  const data = (kind: "ConfigMap" | "Secret", name: string): Record<string, string> => {
+    const obj = find(c, kind, ns, name);
+    if (!obj) return {};
+    return kind === "Secret" ? Object.fromEntries(Object.entries(obj.data).map(([k, v]) => [k, decodeBase64(v)])) : obj.data;
+  };
+  const env: Record<string, string> = {};
+  for (const e of p.container.envFrom ?? []) {
+    const values = e.configMapRef ? data("ConfigMap", e.configMapRef.name) : data("Secret", e.secretRef!.name);
+    // The kubelet skips keys that are not valid variable names.
+    for (const [k, v] of Object.entries(values)) if (/^[-._a-zA-Z][-._a-zA-Z0-9]*$/.test(`${e.prefix ?? ""}${k}`)) env[`${e.prefix ?? ""}${k}`] = v;
+  }
+  for (const e of p.container.env ?? []) {
+    const cm = e.valueFrom?.configMapKeyRef;
+    const s = e.valueFrom?.secretKeyRef;
+    const value = cm ? data("ConfigMap", cm.name)[cm.key] : s ? data("Secret", s.name)[s.key] : (e.value ?? "");
+    if (value !== undefined) env[e.name] = value;
+  }
+  return env;
+}
+
+// shortcut: env is resolved live, so a running container sees ConfigMap changes before it restarts.
+/** Whether the image exits with an error right after starting: a crashing tag, or a variable it needs is missing. */
+export function imageCrashes(c: Cluster, p: Pod) {
+  const info = imageInfo(p.image);
+  return info.crashes || (!!info.needsEnv && !Object.hasOwn(containerEnv(c, p), info.needsEnv));
+}
+
 /** Whether the image needs more memory than the container's limit allows. */
 export function oomKilled(p: Pod) {
   const limit = parseMemory(p.container.resources?.limits?.memory ?? "");
@@ -246,15 +282,15 @@ export function qosClass(ctr: Container): QosClass {
 }
 
 /** Whether the container keeps getting restarted: a crashing image, an OOM kill, or a failing liveness or startup probe. */
-export const crashes = (p: Pod) =>
-  imageInfo(p.image).crashes || oomKilled(p) || !!probeFailure(p, p.container.livenessProbe) || !!probeFailure(p, p.container.startupProbe);
+export const crashes = (c: Cluster, p: Pod) =>
+  imageCrashes(c, p) || oomKilled(p) || !!probeFailure(p, p.container.livenessProbe) || !!probeFailure(p, p.container.startupProbe);
 
 /** Why the previous container run ended, as `describe` shows under Last State, or null. */
-export function lastTermination(p: Pod): { reason: string; exitCode: number } | null {
+export function lastTermination(c: Cluster, p: Pod): { reason: string; exitCode: number } | null {
   if (!p.restarts) return null;
   const exit = runProgram(p.image, p.container)?.exitCode;
   if (exit !== undefined && exit !== null) return { reason: exit ? "Error" : "Completed", exitCode: exit };
-  if (imageInfo(p.image).crashes) return { reason: "Error", exitCode: 1 };
+  if (imageCrashes(c, p)) return { reason: "Error", exitCode: 1 };
   if (oomKilled(p)) return { reason: "OOMKilled", exitCode: 137 };
   return null;
 }
@@ -265,7 +301,7 @@ export function start(c: Cluster, p: Pod) {
   if (mountError(c, p)) p.status = "ContainerCreating";
   else if (pullError(p.image)) p.status = "ImagePullBackOff";
   else if (configError(c, p)) p.status = "CreateContainerConfigError";
-  else if (imageInfo(p.image).crashes) {
+  else if (imageCrashes(c, p)) {
     if (p.spec?.restartPolicy === "Never") p.status = "Error";
     else {
       p.status = "CrashLoopBackOff";
@@ -274,7 +310,7 @@ export function start(c: Cluster, p: Pod) {
   } else if (oomKilled(p)) p.status = "OOMKilled";
   else {
     p.status = "Running";
-    p.ready = !crashes(p) && !probeFailure(p, p.container.readinessProbe);
+    p.ready = !crashes(c, p) && !probeFailure(p, p.container.readinessProbe);
     for (const w of runProgram(p.image, p.container)?.writes ?? []) writeFile(c, p, w.path, w.text, w.append);
   }
 }
@@ -291,17 +327,21 @@ function exited(p: Pod, code: number) {
 }
 
 // shortcut: probe timing is not simulated; a failing liveness probe restarts the container once per command.
-function tick(p: Pod) {
+function tick(c: Cluster, p: Pod) {
   const exit = runProgram(p.image, p.container)?.exitCode;
   if (exit !== undefined && exit !== null) return exited(p, exit);
-  if (!crashes(p)) return;
+  if (!crashes(c, p)) {
+    // The next restart reads the env again, so a fixed variable brings the container up.
+    if (p.status === "CrashLoopBackOff" && imageInfo(p.image).needsEnv) start(c, p);
+    return;
+  }
   if (p.spec?.restartPolicy === "Never") {
     p.ready = false;
     p.status = oomKilled(p) ? "OOMKilled" : "Error";
     return;
   }
   p.restarts++;
-  if (imageInfo(p.image).crashes || p.restarts >= 3) p.status = "CrashLoopBackOff";
+  if (imageCrashes(c, p) || p.restarts >= 3) p.status = "CrashLoopBackOff";
   else if (oomKilled(p)) p.status = "OOMKilled";
 }
 
@@ -466,6 +506,7 @@ export function reconcile(c: Cluster) {
   for (const ds of list(c, "DaemonSet")) reconcileDaemonSet(c, ds);
   for (const sts of list(c, "StatefulSet")) reconcileStatefulSet(c, sts);
   reconcileStorage(c);
+  ensureDefaultServiceAccounts(c);
   schedule(c);
   collectFiles(c);
 }
@@ -478,7 +519,7 @@ export function settle(c: Cluster, seq: number) {
   for (const p of list(c, "Pod")) {
     if (Number(p.metadata.uid) >= seq) continue;
     if (startable(p)) start(c, p);
-    else if (p.status === "Running" || p.status === "CrashLoopBackOff" || p.status === "OOMKilled") tick(p);
+    else if (p.status === "Running" || p.status === "CrashLoopBackOff" || p.status === "OOMKilled") tick(c, p);
   }
 }
 

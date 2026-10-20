@@ -1,5 +1,6 @@
 import { fail, type Parsed } from "./cli";
-import { isFinished } from "./cluster";
+import { containerEnv, isFinished, list } from "./cluster";
+import { nslookup, podCurl, wget } from "./http";
 import { listDir, readFile, writeFile } from "./files";
 import { parseImage } from "./images";
 import { podByRef } from "./observe";
@@ -46,11 +47,54 @@ function ls({ c, pod }: ExecContext, args: string[]): Outcome {
   return { out, code };
 }
 
+/** The process environment: image defaults, the container's env, then Service variables as the kubelet injects them. */
+export function processEnv(c: Cluster, pod: Pod): [string, string][] {
+  const services = list(c, "Service", pod.metadata.namespace).filter(
+    (s) => s.clusterIP !== "None" && Number(s.metadata.uid) < Number(pod.metadata.uid),
+  );
+  const serviceVars = ([["kubernetes", "10.96.0.1", 443, "https"]] as [string, string, number, string | undefined][])
+    .concat(services.map((s) => [s.metadata.name, s.clusterIP, s.ports[0].port, s.ports[0].name]))
+    .flatMap(([name, ip, port, portName]): [string, string][] => {
+      const prefix = name.toUpperCase().replace(/-/g, "_");
+      const tcp = `${prefix}_PORT_${port}_TCP`;
+      return [
+        [`${prefix}_SERVICE_HOST`, ip],
+        [`${prefix}_SERVICE_PORT`, String(port)],
+        ...(portName ? [[`${prefix}_SERVICE_PORT_${portName.toUpperCase().replace(/-/g, "_")}`, String(port)] as [string, string]] : []),
+        [`${prefix}_PORT`, `tcp://${ip}:${port}`],
+        [tcp, `tcp://${ip}:${port}`],
+        [`${tcp}_PROTO`, "tcp"],
+        [`${tcp}_PORT`, String(port)],
+        [`${tcp}_ADDR`, ip],
+      ];
+    });
+  return [
+    ["PATH", "/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin"],
+    ["HOSTNAME", pod.metadata.name],
+    ...Object.entries(containerEnv(c, pod)),
+    ...serviceVars,
+    ["HOME", "/root"],
+  ];
+}
+
+function printenv({ c, pod }: ExecContext, args: string[]): Outcome {
+  const env = processEnv(c, pod);
+  if (!args.length) return { out: env.map(([k, v]) => `${k}=${v}\n`).join(""), code: 0 };
+  const values = args.map((name) => env.findLast(([k]) => k === name)?.[1]);
+  return { out: values.filter((v) => v !== undefined).map((v) => `${v}\n`).join(""), code: values.includes(undefined) ? 1 : 0 };
+}
+
 /** Commands `kubectl exec` runs, directly or inside `sh -c '...'`. Add an entry to support another command. */
 export const EXEC_COMMANDS: Record<string, ExecCommand> = {
   cat,
   ls,
   echo: (_, args) => echo(args),
+  env: (ctx, args) => (args.length ? { out: "env: running a command through env is not supported in this simulator\n", code: 125 } : printenv(ctx, [])),
+  printenv,
+  wget: ({ c, pod }, args) => wget(c, pod, args, (path, text) => writeFile(c, pod, path, text, false)),
+  curl: ({ c, pod }, args) => podCurl(c, pod, args),
+  nslookup: ({ c, pod }, args) => nslookup(c, pod, args),
+  hostname: ({ pod }) => ({ out: `${pod.metadata.name}\n`, code: 0 }),
 };
 
 function unsupported(): never {
