@@ -157,7 +157,7 @@ describe("bad input", () => {
   });
 
   it("explains unsupported commands", () => {
-    const r = exec(web(), "kubectl apply -f x.yaml");
+    const r = exec(web(), "kubectl exec web");
     expect(r.error).toBe(true);
     expect(r.output).toContain("kubectl help");
   });

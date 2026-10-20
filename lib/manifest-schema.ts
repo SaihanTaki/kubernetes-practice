@@ -29,10 +29,11 @@ const workloadSpec = z.object({
 
 const selectorMatchesTemplate = (s: z.infer<typeof workloadSpec>) =>
   Object.entries(s.selector.matchLabels).every(([k, v]) => s.template.metadata.labels[k] === v);
-const selectorError = { message: "selector does not match template labels", path: ["spec", "selector"] };
+const selectorError = { message: "selector does not match template labels", path: ["selector"] };
 
 /** A deliberately small subset of the real Kubernetes schemas, covering what the chapters teach. */
 export const manifestSchema = z.discriminatedUnion("kind", [
+  z.object({ apiVersion: z.literal("v1"), kind: z.literal("Namespace"), metadata: z.object({ name }) }),
   z.object({ apiVersion: z.literal("v1"), kind: z.literal("Pod"), metadata, spec: podSpec }),
   z.object({
     apiVersion: z.literal("apps/v1"),

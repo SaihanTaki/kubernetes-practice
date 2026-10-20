@@ -22,6 +22,8 @@ export type Pod = {
   node: string;
   status: PodStatus;
   restarts: number;
+  /** Canonical spec of a Pod created by apply, minus its image, to reject updates the API forbids. */
+  specKey?: string;
 };
 
 export type ReplicaSet = {
@@ -51,6 +53,8 @@ export type Cluster = {
   nodes: string[];
   namespaces: string[];
   resources: Resource[];
+  /** Simulated files (name -> text) for ls, cat, redirects and apply -f. */
+  files: Record<string, string>;
 };
 
 type WorkloadFixture = { name: string; namespace?: string; replicas: number; image: string; labels: Labels };
@@ -67,6 +71,7 @@ export type Fixture = {
     status?: PodStatus;
     restarts?: number;
   }[];
+  files?: Record<string, string>;
 };
 
 export type RunResult = { cluster: Cluster; output: string; error: boolean };

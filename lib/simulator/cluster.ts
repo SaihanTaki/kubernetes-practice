@@ -22,7 +22,7 @@ function suffix(seed: number, length: number): string {
   return out;
 }
 
-function meta(c: Cluster, name: string, namespace: string, labels: Labels) {
+export function meta(c: Cluster, name: string, namespace: string, labels: Labels) {
   return { uid: String(c.seq++), name, namespace, labels: { ...labels }, createdAt: c.clock };
 }
 
@@ -56,17 +56,18 @@ function templateHash(t: PodTemplate): string {
   return suffix(hash(JSON.stringify(t)), 10);
 }
 
+export function currentReplicaSet(c: Cluster, d: Deployment) {
+  return find(c, "ReplicaSet", d.metadata.namespace, `${d.metadata.name}-${templateHash(d.template)}`);
+}
+
+export function newPod(c: Cluster, name: string, namespace: string, labels: Labels, image: string): Pod {
+  const node = WORKERS[c.seq % WORKERS.length];
+  return { kind: "Pod", metadata: meta(c, name, namespace, labels), image, node, status: "ContainerCreating", restarts: 0 };
+}
+
 function createPod(c: Cluster, rs: ReplicaSet) {
-  const seq = c.seq;
-  const pod: Pod = {
-    kind: "Pod",
-    metadata: meta(c, `${rs.metadata.name}-${suffix(seq, 5)}`, rs.metadata.namespace, rs.template.labels),
-    owner: rs.metadata.name,
-    image: rs.template.image,
-    node: WORKERS[seq % WORKERS.length],
-    status: "ContainerCreating",
-    restarts: 0,
-  };
+  const pod = newPod(c, `${rs.metadata.name}-${suffix(c.seq, 5)}`, rs.metadata.namespace, rs.template.labels, rs.template.image);
+  pod.owner = rs.metadata.name;
   c.resources.push(pod);
 }
 
@@ -77,12 +78,11 @@ function createPod(c: Cluster, rs: ReplicaSet) {
  */
 export function reconcile(c: Cluster) {
   for (const d of list(c, "Deployment")) {
-    const name = `${d.metadata.name}-${templateHash(d.template)}`;
-    let rs = find(c, "ReplicaSet", d.metadata.namespace, name);
+    let rs = currentReplicaSet(c, d);
     if (!rs) {
       rs = {
         kind: "ReplicaSet",
-        metadata: meta(c, name, d.metadata.namespace, d.template.labels),
+        metadata: meta(c, `${d.metadata.name}-${templateHash(d.template)}`, d.metadata.namespace, d.template.labels),
         owner: d.metadata.name,
         replicas: d.replicas,
         selector: { ...d.selector },
@@ -92,6 +92,9 @@ export function reconcile(c: Cluster) {
     }
     // A Deployment overrides manual scaling of the ReplicaSet it owns.
     rs.replicas = d.replicas;
+    // Old ReplicaSets are kept for rollback but run no Pods.
+    // shortcut: the switch to the new template is instant, not a gradual rolling update.
+    for (const old of replicaSetsOf(c, d)) if (old !== rs) old.replicas = 0;
   }
 
   // ReplicaSets first, so their Pods are collected in the same pass.
@@ -115,10 +118,12 @@ export function reconcile(c: Cluster) {
   }
 }
 
-/** Advance the clock: containers that were being created are now running. */
-export function settle(c: Cluster) {
+/** Advance the clock: containers of Pods created before `seq` that were being created are now running. */
+export function settle(c: Cluster, seq: number) {
   c.clock += SECONDS_PER_COMMAND;
-  for (const p of list(c, "Pod")) if (p.status === "ContainerCreating") p.status = "Running";
+  for (const p of list(c, "Pod")) {
+    if (p.status === "ContainerCreating" && Number(p.metadata.uid) < seq) p.status = "Running";
+  }
 }
 
 export function createCluster(fixture: Fixture = {}): Cluster {
@@ -128,6 +133,7 @@ export function createCluster(fixture: Fixture = {}): Cluster {
     nodes: ["control-plane", ...WORKERS],
     namespaces: ["default", "kube-system", ...(fixture.namespaces ?? [])],
     resources: [],
+    files: { ...fixture.files },
   };
   const ns = (n?: string) => n ?? "default";
   for (const d of fixture.deployments ?? []) {
