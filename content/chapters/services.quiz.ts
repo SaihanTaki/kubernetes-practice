@@ -346,4 +346,127 @@ export const quiz: QuizQuestion[] = [
     explanation:
       "A Pod matches when it has every label in the selector. tier: frontend is a subset of the Pod labels. tier: backend conflicts, and the other two are not labels the Pods carry.",
   },
+  {
+    id: "services-externalname",
+    topic: "Service types",
+    difficulty: "advanced",
+    question: "Your apps should reach an outside database, db.example.com, through a cluster name. Which Service does that?",
+    options: [
+      { id: "a", text: "A headless Service with clusterIP: None" },
+      { id: "b", text: "An ExternalName Service, which DNS answers with a CNAME to db.example.com" },
+      { id: "c", text: "A NodePort Service with nodePort set to the database port" },
+      { id: "d", text: "A ClusterIP Service with selector host: db.example.com" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "An ExternalName Service has no selector and no ClusterIP. Cluster DNS returns a CNAME to the outside host. A headless Service returns the IPs of selected Pods, so it cannot point at a host outside the cluster.",
+  },
+  {
+    id: "services-containerport-info",
+    topic: "Ports",
+    difficulty: "intermediate",
+    question:
+      "A container declares containerPort: 80, but the app inside listens on 8080. Where must the Service's targetPort point for connections to work?",
+    options: [
+      { id: "a", text: "80, because the Service reads containerPort" },
+      { id: "b", text: "Any port, kube-proxy finds the open one" },
+      { id: "c", text: "8080, the port the app really listens on" },
+      { id: "d", text: "The nodePort" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "containerPort is informational. It does not open or move any port. Traffic must go to where the process listens, 8080. Pointing at 80 because it is declared gets connection refused.",
+  },
+  {
+    id: "services-named-targetport",
+    topic: "Ports",
+    difficulty: "advanced",
+    question: "A Service has targetPort: http. What does that mean?",
+    options: [
+      { id: "a", text: "Traffic goes to the container port named http in the Pod spec" },
+      { id: "b", text: "Traffic is sent to port 80, because http always means 80" },
+      { id: "c", text: "The Service only accepts HTTP, not other TCP traffic" },
+      { id: "d", text: "The manifest is rejected, targetPort must be a number" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "targetPort can be a number or the name of a container port. Kubernetes looks up the port with that name in each Pod. The name does not fix a number or limit the protocol.",
+  },
+  {
+    id: "services-port-name",
+    topic: "Service YAML",
+    difficulty: "intermediate",
+    question: "When is name required on an entry in a Service's spec.ports?",
+    options: [
+      { id: "a", text: "Always, every port needs a name" },
+      { id: "b", text: "Only for NodePort Services" },
+      { id: "c", text: "Only when targetPort is set" },
+      { id: "d", text: "When the Service has more than one port" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "A single port may be unnamed. Once a Service lists two or more ports, each needs a name so they can be told apart, for example in EndpointSlices. The Service type does not change this.",
+  },
+  {
+    id: "services-deployment-labels",
+    topic: "Selectors",
+    difficulty: "intermediate",
+    question:
+      "A Deployment has metadata.labels team: shop, and its Pod template has labels app: api. Which Service selector reaches its Pods?",
+    options: [
+      { id: "a", text: "team: shop" },
+      { id: "b", text: "app: api" },
+      { id: "c", text: "app: api, team: shop" },
+      { id: "d", text: "deployment: api" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "Pods get the labels in spec.template.metadata.labels, not the Deployment's own labels. team: shop is only on the Deployment object, so any selector that requires it matches no Pods.",
+  },
+  {
+    id: "services-relabel-pods",
+    topic: "Debugging",
+    difficulty: "advanced",
+    question:
+      "A Service selects app=nginx but the Deployment's Pods are labelled app=web. Why is running kubectl label pods to add app=nginx a poor fix?",
+    options: [
+      { id: "a", text: "kubectl cannot change labels on running Pods" },
+      { id: "b", text: "Pods with two app labels are rejected" },
+      { id: "c", text: "Replacement Pods come from the template without app=nginx, so endpoints disappear again" },
+      { id: "d", text: "The Service only reads labels at creation time" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "Relabelling works until the Pods are replaced. New Pods get the template labels and drop out of the endpoints. Fix the Service selector to app=web instead. A Pod cannot have two values for one key anyway.",
+  },
+  {
+    id: "services-expose-defaults",
+    topic: "kubectl expose",
+    difficulty: "beginner",
+    question: "You run kubectl expose deployment api --port=80 --target-port=8080. What do you get?",
+    options: [
+      { id: "a", text: "A ClusterIP Service named api with the Deployment's selector" },
+      { id: "b", text: "A NodePort Service named api-service" },
+      { id: "c", text: "A LoadBalancer Service named api" },
+      { id: "d", text: "A new Deployment named api-svc" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "Without --name the Service takes the Deployment's name, and without --type it is ClusterIP. expose copies the Deployment's selector so the Service matches its Pods.",
+  },
+  {
+    id: "services-ports-column",
+    topic: "Service types",
+    difficulty: "intermediate",
+    question: "kubectl get services shows PORT(S) 80:31234/TCP for a NodePort Service. What is 31234?",
+    options: [
+      { id: "a", text: "The targetPort on the Pods" },
+      { id: "b", text: "The node port opened on every node" },
+      { id: "c", text: "The containerPort" },
+      { id: "d", text: "The ClusterIP port" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "The column shows the Service port, then the node port. 80 is the ClusterIP port. targetPort is not shown here; it appears in the endpoints as PodIP:targetPort.",
+  },
 ];

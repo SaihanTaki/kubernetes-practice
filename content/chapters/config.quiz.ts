@@ -346,4 +346,140 @@ export const quiz: QuizQuestion[] = [
     explanation:
       "A ConfigMap has no spec. Its settings are string values under data. stringData is a Secret field, and labels are for selecting objects, not configuration.",
   },
+  {
+    id: "config-from-file",
+    topic: "ConfigMaps",
+    difficulty: "beginner",
+    question: "What does kubectl create configmap nginx-conf --from-file=nginx.conf produce?",
+    options: [
+      { id: "a", text: "One key per line of nginx.conf" },
+      { id: "b", text: "A key named nginx-conf holding the file path" },
+      { id: "c", text: "One key named nginx.conf whose value is the file's contents" },
+      { id: "d", text: "A volume that mounts the file from your laptop" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "--from-file uses the file name as the key and the contents as the value. Splitting KEY=value lines into separate keys is what --from-env-file does, and --from-file=custom-key=nginx.conf picks a different key name.",
+  },
+  {
+    id: "config-yaml-volume",
+    topic: "Pod YAML",
+    difficulty: "intermediate",
+    question:
+      "ConfigMap nginx-conf has the key default.conf. A container mounts volumes: [{ name: conf, configMap: { name: nginx-conf } }] at mountPath: /etc/nginx/conf.d. What does the container see?",
+    options: [
+      { id: "a", text: "An environment variable named default.conf" },
+      { id: "b", text: "A file /etc/nginx/conf.d/default.conf containing the key's value" },
+      { id: "c", text: "A single file /etc/nginx/conf.d holding the whole ConfigMap as YAML" },
+      { id: "d", text: "An empty directory until the app calls the API server" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "In a ConfigMap volume each key becomes a file in the mount directory and its value becomes the file contents. A volume does not create env vars, and the app reads ordinary files without talking to the API server.",
+  },
+  {
+    id: "config-env-precedence",
+    topic: "Pod YAML",
+    difficulty: "intermediate",
+    question: "envFrom loads LOG_LEVEL=info from a ConfigMap, and the same container's env sets LOG_LEVEL with value: debug. What does the app see?",
+    options: [
+      { id: "a", text: "info, because envFrom is applied last" },
+      { id: "b", text: "Both values joined with a comma" },
+      { id: "c", text: "Nothing; the Pod is rejected for a duplicate name" },
+      { id: "d", text: "debug, because an env entry wins over envFrom for the same name" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "When env and envFrom set the same variable, the env entry takes precedence. That lets you load a whole ConfigMap and override a single value.",
+  },
+  {
+    id: "config-immutable-load",
+    topic: "ConfigMaps",
+    difficulty: "advanced",
+    question: "Besides preventing accidental edits, what does immutable: true on a ConfigMap give a large cluster?",
+    options: [
+      { id: "a", text: "The values are encrypted in etcd" },
+      { id: "b", text: "Less load on the API server, because kubelets stop watching the object for changes" },
+      { id: "c", text: "Pods using it restart faster after a change" },
+      { id: "d", text: "The 1 MiB size limit is lifted" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "An immutable object cannot change, so kubelets do not need to watch it. With thousands of Pods that removes a lot of watch traffic. It does not encrypt anything or change the size limit.",
+  },
+  {
+    id: "config-rbac-list",
+    topic: "Secrets",
+    difficulty: "advanced",
+    question: "You want a team to see which Secrets exist in a namespace but not their values. Is granting list on secrets safe?",
+    options: [
+      { id: "a", text: "Yes, list returns names only" },
+      { id: "b", text: "Yes, as long as get is not granted" },
+      { id: "c", text: "No, list returns the full Secret objects, values included" },
+      { id: "d", text: "No, list also lets them delete Secrets" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "A list response contains every object in full, so list on secrets exposes every value just like get does. It does not grant delete. Treat get, list, and watch on secrets as equally sensitive.",
+  },
+  {
+    id: "config-yaml-stringdata-wins",
+    topic: "Secret YAML",
+    difficulty: "intermediate",
+    question: "A Secret manifest sets the key DB_PASSWORD under both data and stringData with different values. Which value is stored?",
+    options: [
+      { id: "a", text: "The data value, because data is the stored field" },
+      { id: "b", text: "Neither; the API server rejects the duplicate key" },
+      { id: "c", text: "Whichever appears first in the file" },
+      { id: "d", text: "The stringData value" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "The API server merges stringData into data, and for a key present in both the stringData value wins. Order in the file does not matter.",
+  },
+  {
+    id: "config-yaml-opaque",
+    topic: "Secret YAML",
+    difficulty: "beginner",
+    question: "A Secret manifest leaves out the type field. Which type does it get?",
+    options: [
+      { id: "a", text: "Opaque, for arbitrary data with no required keys" },
+      { id: "b", text: "kubernetes.io/tls" },
+      { id: "c", text: "kubernetes.io/service-account-token" },
+      { id: "d", text: "None; type is required" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "Opaque is the default and accepts any keys. The other types require specific keys, such as tls.crt and tls.key for kubernetes.io/tls.",
+  },
+  {
+    id: "config-missing-volume",
+    topic: "Troubleshooting",
+    difficulty: "intermediate",
+    question: "A Pod mounts a ConfigMap as a volume, and that ConfigMap does not exist. What do you see?",
+    options: [
+      { id: "a", text: "CreateContainerConfigError, the same as a missing env reference" },
+      { id: "b", text: "The Pod stays in ContainerCreating with a FailedMount event" },
+      { id: "c", text: "The container starts with an empty directory" },
+      { id: "d", text: "The Pod stays Pending because the scheduler cannot place it" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "A missing volume source blocks the mount, so the Pod waits in ContainerCreating and describe shows FailedMount. CreateContainerConfigError is what a missing env or envFrom reference gives. The Pod is already scheduled, so it is not Pending.",
+  },
+  {
+    id: "config-fix-no-restart",
+    topic: "Troubleshooting",
+    difficulty: "beginner",
+    question: "A Deployment's Pods show CreateContainerConfigError because ConfigMap api-config is missing. You create it. What else must you do?",
+    options: [
+      { id: "a", text: "Nothing; the kubelet retries and the containers start" },
+      { id: "b", text: "Run kubectl rollout restart, or the Pods stay stuck" },
+      { id: "c", text: "Restart the kubelet on each node" },
+      { id: "d", text: "Delete and reapply the Deployment" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "The kubelet keeps retrying to build the container's configuration. Once the ConfigMap exists, the containers start on the next retry. A restart is only needed to pick up changed values in containers that are already running.",
+  },
 ];

@@ -332,4 +332,94 @@ export const quiz: QuizQuestion[] = [
     explanation:
       "Containers in a Pod share one IP and one set of ports, so the second server gets an \"address in use\" error and usually exits. Kubernetes does not remap ports for you.",
   },
+  {
+    id: "pods-describe",
+    topic: "Inspecting Pods",
+    difficulty: "beginner",
+    question: "A Pod is not Running. Which command shows its waiting reason, restart count, the controller that owns it, and recent events?",
+    options: [
+      { id: "a", text: "kubectl describe pod <name>" },
+      { id: "b", text: "kubectl get pods" },
+      { id: "c", text: "kubectl get nodes" },
+      { id: "d", text: "kubectl apply -f pod.yaml" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "kubectl describe pod shows the node, image, container state with the waiting reason, Restart Count, Controlled By, and events. kubectl get pods only gives a one-line summary with STATUS and RESTARTS.",
+  },
+  {
+    id: "pods-pending-no-node",
+    topic: "Pods",
+    difficulty: "intermediate",
+    question: "A Pod stays Pending and kubectl describe shows it has no node. What is the most likely reason?",
+    options: [
+      { id: "a", text: "The image tag is wrong" },
+      { id: "b", text: "The container keeps crashing after it starts" },
+      { id: "c", text: "The container went over its memory limit" },
+      { id: "d", text: "The scheduler cannot find a node with enough unreserved capacity for its requests" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "A Pod with no node has not been scheduled yet, and the scheduler only places it where its requests fit. Image pull failures, crashes, and memory limits all happen after the Pod is on a node.",
+  },
+  {
+    id: "pods-restart-in-place",
+    topic: "Pods",
+    difficulty: "intermediate",
+    question: "A container crashes in a Pod with restartPolicy: Always. Where is it restarted?",
+    options: [
+      { id: "a", text: "In the same Pod on the same node, and the RESTARTS count goes up" },
+      { id: "b", text: "In a new Pod with a new name" },
+      { id: "c", text: "On whichever node has the most free memory" },
+      { id: "d", text: "Nowhere, until a ReplicaSet creates a new Pod" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "The kubelet restarts the container in place, inside the existing Pod. The Pod keeps its name and node. Creating a new Pod is a controller's job, and only happens when the Pod itself is gone.",
+  },
+  {
+    id: "pods-crashloop-next-step",
+    topic: "Pods",
+    difficulty: "intermediate",
+    question: "A Pod has been in CrashLoopBackOff for an hour. What is the useful next step?",
+    options: [
+      { id: "a", text: "Wait, because the kubelet will fix it on a later restart" },
+      { id: "b", text: "Change restartPolicy to Always so it retries harder" },
+      { id: "c", text: "Delete the node the Pod runs on" },
+      { id: "d", text: "Read the waiting reason, the events, and the container logs to find why it exits" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "CrashLoopBackOff means restarting has already been tried and did not help. The cause is in the container: a bad command, missing configuration, or an app that exits right away. restartPolicy Always is already what causes the restarts.",
+  },
+  {
+    id: "pods-yaml-env-quote",
+    topic: "Pod YAML",
+    difficulty: "intermediate",
+    question: "A container's env has an entry with name: PORT and value: 8080, written without quotes. What happens when you apply it?",
+    options: [
+      { id: "a", text: "It works, because Kubernetes converts the number to a string" },
+      { id: "b", text: "It is rejected, because env values must be strings; write value: \"8080\"" },
+      { id: "c", text: "The container gets PORT set to an empty string" },
+      { id: "d", text: "The entry is skipped silently" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "An env value is a string field. YAML reads 8080 as a number, so the manifest fails to decode. Quote numbers and booleans in env values.",
+  },
+  {
+    id: "pods-containercreating-phase",
+    topic: "Pods",
+    difficulty: "advanced",
+    question: "kubectl get pods shows STATUS ContainerCreating. What is the Pod's status.phase at that moment?",
+    options: [
+      { id: "a", text: "Running" },
+      { id: "b", text: "ContainerCreating" },
+      { id: "c", text: "Pending" },
+      { id: "d", text: "Unknown" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "ContainerCreating is a STATUS shown while the Pod is still Pending: it has a node, but its containers are not all running yet. It is not a phase of its own. The phase becomes Running once a container starts.",
+  },
 ];

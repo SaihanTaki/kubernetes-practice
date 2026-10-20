@@ -399,4 +399,110 @@ export const quiz: QuizQuestion[] = [
     correctOptionId: "a",
     explanation: "Replace deletes the running Job and starts the new one. Forbid skips the new run instead, suspend stops all new runs, and history limits only control cleanup.",
   },
+  {
+    id: "jobs-backoff-delay",
+    topic: "Jobs",
+    difficulty: "intermediate",
+    question: "A Job's Pods keep failing. How long does the Job wait before each retry?",
+    options: [
+      { id: "a", text: "It retries immediately every time" },
+      { id: "b", text: "An exponential back-off: 10s, 20s, 40s, and so on, up to 6 minutes" },
+      { id: "c", text: "A fixed 60 seconds between attempts" },
+      { id: "d", text: "backoffLimit seconds" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "Retries are delayed with a doubling back-off capped at 6 minutes. backoffLimit is a count of failed attempts, not a time.",
+  },
+  {
+    id: "jobs-onfailure-count",
+    topic: "Jobs",
+    difficulty: "advanced",
+    question: "With restartPolicy: OnFailure, what counts toward a Job's backoffLimit?",
+    options: [
+      { id: "a", text: "Each container restart inside the Pod" },
+      { id: "b", text: "Nothing, OnFailure retries without limit" },
+      { id: "c", text: "Only failed Pods, so restarts in one Pod count once" },
+      { id: "d", text: "Each node the Pod is scheduled to" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "With OnFailure the kubelet restarts the container in the same Pod, and each restart counts as a failed attempt. With Never each failed Pod counts instead. Either way the limit applies.",
+  },
+  {
+    id: "jobs-logs-job",
+    topic: "Jobs",
+    difficulty: "intermediate",
+    question: "A Job with restartPolicy: Never has three failed Pods. What does kubectl logs job/report show?",
+    options: [
+      { id: "a", text: "The logs of all three Pods, one after another" },
+      { id: "b", text: "Only the Job's events" },
+      { id: "c", text: "The logs of one of the Job's Pods, picked for you" },
+      { id: "d", text: "An error, logs only accepts Pod names" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "logs job/<name> picks one Pod of the Job. To read every failed attempt, list them with kubectl get pods -l job-name=report and run kubectl logs on each. Events are in kubectl describe job.",
+  },
+  {
+    id: "jobs-cron-ownership",
+    topic: "CronJobs",
+    difficulty: "beginner",
+    question: "The nightly-report CronJob's schedule fires. What does it create?",
+    options: [
+      { id: "a", text: "A Pod named nightly-report" },
+      { id: "b", text: "A Deployment that runs until morning" },
+      { id: "c", text: "A new revision of the CronJob" },
+      { id: "d", text: "A Job named nightly-report-<scheduled time in minutes>, which then creates the Pods" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "A CronJob never creates Pods directly. It creates a Job from jobTemplate, and the Job creates and counts Pods exactly like a Job you applied yourself.",
+  },
+  {
+    id: "jobs-cron-tz",
+    topic: "CronJobs",
+    difficulty: "intermediate",
+    question: "How do you make a CronJob run at 02:30 Berlin time?",
+    options: [
+      { id: "a", text: "schedule: \"CRON_TZ=Europe/Berlin 30 2 * * *\"" },
+      { id: "b", text: "schedule: \"30 2 * * *\" and timeZone: Europe/Berlin" },
+      { id: "c", text: "Set a TZ environment variable in the container" },
+      { id: "d", text: "Shift the hour by hand and leave the schedule in UTC forever" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "spec.timeZone takes a tz database name. CRON_TZ= or TZ= inside schedule is rejected by the API server. A TZ variable in the container only changes the Pod's clock, not when the CronJob fires.",
+  },
+  {
+    id: "jobs-suspend-resume",
+    topic: "CronJobs",
+    difficulty: "advanced",
+    question:
+      "A CronJob was suspended over several schedule times and has no startingDeadlineSeconds. What can happen when you set suspend back to false?",
+    options: [
+      { id: "a", text: "Missed runs can start right away" },
+      { id: "b", text: "The CronJob waits a full day before running again" },
+      { id: "c", text: "The API server rejects the change until the next schedule time" },
+      { id: "d", text: "Nothing, missed runs are always dropped" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "Runs missed while suspended can be started as soon as you resume. startingDeadlineSeconds limits how late a run may start, so setting it keeps old missed runs from firing.",
+  },
+  {
+    id: "jobs-patch-suspend",
+    topic: "CronJobs",
+    difficulty: "beginner",
+    question: "Which command pauses the cleanup CronJob without editing its file?",
+    options: [
+      { id: "a", text: "kubectl rollout pause cronjob/cleanup" },
+      { id: "b", text: "kubectl scale cronjob cleanup --replicas=0" },
+      { id: "c", text: "kubectl patch cronjob cleanup -p '{\"spec\":{\"suspend\":true}}'" },
+      { id: "d", text: "kubectl delete job cleanup" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "Patching spec.suspend to true stops new runs and deletes nothing. rollout pause and scale do not apply to CronJobs, and deleting a Job does not stop the schedule.",
+  },
 ];

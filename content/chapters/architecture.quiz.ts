@@ -331,4 +331,124 @@ export const quiz: QuizQuestion[] = [
     explanation:
       "Cluster DNS is an add-on, not a core component. CoreDNS watches Services through the API server and answers name lookups; the kubelet only points each Pod's resolver at it.",
   },
+  {
+    id: "architecture-etcd-two-members",
+    topic: "High availability",
+    difficulty: "intermediate",
+    question: "A team runs 2 etcd members for redundancy. One of them fails. What happens?",
+    options: [
+      { id: "a", text: "The remaining member keeps accepting writes" },
+      { id: "b", text: "etcd adds a third member automatically" },
+      { id: "c", text: "Writes stop, because quorum for 2 members is 2" },
+      { id: "d", text: "Writes slow down but continue" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "A write needs a majority. For 2 members that is both of them, so losing either stops all writes. That is worse than 1 member, since there are now two machines that can fail. Use 3 or 5.",
+  },
+  {
+    id: "architecture-apply-returns",
+    topic: "Following a Pod",
+    difficulty: "beginner",
+    question: "kubectl apply -f hello.yaml prints pod/hello created, but the image tag has a typo. What does that output tell you?",
+    options: [
+      { id: "a", text: "The image was pulled and the Pod is Running" },
+      { id: "b", text: "The scheduler has already placed the Pod on a node" },
+      { id: "c", text: "The kubelet checked that the image tag exists" },
+      { id: "d", text: "Only that the API server stored the Pod; scheduling and the image pull have not happened yet" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "kubectl apply returns once the object is stored in etcd. A bad tag only shows up later, when the kubelet tries to pull the image. Check kubectl get pods to see whether the Pod actually starts.",
+  },
+  {
+    id: "architecture-cloud-controller-manager",
+    topic: "Control plane",
+    difficulty: "intermediate",
+    question: "On a cloud provider, which component calls the provider's API to create a load balancer for a Service?",
+    options: [
+      { id: "a", text: "kube-proxy" },
+      { id: "b", text: "kube-scheduler" },
+      { id: "c", text: "cloud-controller-manager" },
+      { id: "d", text: "The kubelet" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "The optional cloud-controller-manager runs controllers that talk to the cloud provider, for example to create load balancers or remove Nodes whose VM was deleted. kube-proxy only programs network rules on its own node.",
+  },
+  {
+    id: "architecture-etcd-backup",
+    topic: "Control plane",
+    difficulty: "intermediate",
+    question: "Why should you back up etcd regularly, for example with etcdctl snapshot save?",
+    options: [
+      { id: "a", text: "etcd stores container images, which are slow to pull again" },
+      { id: "b", text: "The scheduler reads its scoring rules from the backup" },
+      { id: "c", text: "The kubelet needs the backup to restart a crashed container" },
+      { id: "d", text: "etcd holds every object's spec and status, so losing it loses the cluster's state" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "etcd is where the API server stores all cluster state. Images live in registries and on nodes, and container restarts are handled by the kubelet. Without etcd, the cluster no longer knows what should exist.",
+  },
+  {
+    id: "architecture-static-hostnetwork",
+    topic: "YAML: static Pod manifest",
+    difficulty: "advanced",
+    question: "Why does the kube-apiserver static Pod manifest set hostNetwork: true?",
+    options: [
+      { id: "a", text: "The API server must listen on the node's IP and be reachable before any Pod network exists" },
+      { id: "b", text: "It lets the Pod run without a container runtime" },
+      { id: "c", text: "It allows the scheduler to place the Pod on any node" },
+      { id: "d", text: "It stops the kubelet from restarting the Pod" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "With hostNetwork the Pod uses the node's network namespace, so the API server listens directly on the node's IP. The Pod network is set up by a CNI add-on, which itself needs the API server, so the API server cannot depend on it.",
+  },
+  {
+    id: "architecture-watch",
+    topic: "Communication",
+    difficulty: "intermediate",
+    question: "How does the kubelet learn that a new Pod has been bound to its node?",
+    options: [
+      { id: "a", text: "The scheduler connects to the kubelet and sends it the Pod" },
+      { id: "b", text: "It watches the API server for Pods bound to its node" },
+      { id: "c", text: "It reads etcd directly every few seconds" },
+      { id: "d", text: "kube-proxy forwards the Pod to it" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "Components never call each other. The scheduler writes a binding to the API server, and the kubelet, which holds a watch on Pods for its node, is notified. Only the API server reads etcd.",
+  },
+  {
+    id: "architecture-kubelet-service",
+    topic: "Worker nodes",
+    difficulty: "advanced",
+    question: "How does the kubelet itself run on a node, and what does it create in the API when it starts?",
+    options: [
+      { id: "a", text: "As a Pod in kube-system, and it creates the kube-node-lease namespace" },
+      { id: "b", text: "As a static Pod, and it creates the kube-scheduler Pod" },
+      { id: "c", text: "As a system service, not in a Pod, and it registers a Node object for its machine" },
+      { id: "d", text: "As a Deployment, and it creates one Pod per container" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "The kubelet runs as a system service on every node, because it is what starts Pods. On startup it registers a Node object for its machine, then keeps it alive with Lease renewals and status updates.",
+  },
+  {
+    id: "architecture-cri-sandbox",
+    topic: "Container runtime",
+    difficulty: "advanced",
+    question: "Through the CRI RuntimeService, what does the kubelet ask the runtime to create before it creates a Pod's containers?",
+    options: [
+      { id: "a", text: "A Node object for the Pod" },
+      { id: "b", text: "A Service for the Pod" },
+      { id: "c", text: "A new container image" },
+      { id: "d", text: "The Pod sandbox, the network namespace the Pod's containers share" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "The kubelet first creates the Pod sandbox, then creates and starts each container inside it. Images are pulled through the separate ImageService, and Nodes and Services are API objects, not things the runtime creates.",
+  },
 ];

@@ -353,4 +353,67 @@ export const quiz: QuizQuestion[] = [
     explanation:
       "The rollout trusts readiness. If the probe checks something that matters, broken Pods never become ready and the old Pods keep serving. Removing the probe makes Pods ready as soon as they start.",
   },
+  {
+    id: "rollouts-same-template",
+    topic: "Rollouts",
+    difficulty: "advanced",
+    question:
+      "Revision 1 ran example/api:1.0 and revision 2 runs 1.1. You apply a manifest whose template is identical to revision 1. What happens?",
+    options: [
+      { id: "a", text: "A new ReplicaSet is created as revision 3, next to the unused revision 1" },
+      { id: "b", text: "Nothing, because the template already exists in the history" },
+      { id: "c", text: "The apply is rejected as a duplicate" },
+      { id: "d", text: "The revision 1 ReplicaSet is scaled back up and becomes revision 3" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "Kubernetes does not create a duplicate ReplicaSet for a template it already has. It reuses the old one and gives it the next revision number, the same way rollout undo does.",
+  },
+  {
+    id: "rollouts-fix-forward",
+    topic: "Stuck rollouts",
+    difficulty: "intermediate",
+    question:
+      "A rollout to example/api:2.0 is stuck in CrashLoopBackOff. Instead of undo, you set the image to a fixed tag, 2.0.1. What happens?",
+    options: [
+      { id: "a", text: "The change waits until the stuck rollout reaches its progress deadline" },
+      { id: "b", text: "The rollout moves on to the 2.0.1 template and the failing 2.0 ReplicaSet is scaled down" },
+      { id: "c", text: "The API server rejects template changes during a rollout" },
+      { id: "d", text: "Both 2.0 and 2.0.1 Pods keep running until you delete the 2.0 ReplicaSet" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "A new template starts a new rollout right away. The controller scales the newest ReplicaSet up and the older ones down, including the failing one. You do not have to wait for the deadline or undo first.",
+  },
+  {
+    id: "rollouts-paused-undo",
+    topic: "Rollouts",
+    difficulty: "advanced",
+    question: "A Deployment is paused with kubectl rollout pause. Which still works without resuming?",
+    options: [
+      { id: "a", text: "kubectl rollout undo deployment/api" },
+      { id: "b", text: "A template change rolling out new Pods at once" },
+      { id: "c", text: "kubectl scale deployment api --replicas=6" },
+      { id: "d", text: "None, a paused Deployment ignores every change" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "Scaling still applies while paused. Template changes are stored but create no ReplicaSet until resume, and rollout undo refuses to run on a paused Deployment.",
+  },
+  {
+    id: "rollouts-restart-configmap",
+    topic: "Rollouts",
+    difficulty: "intermediate",
+    question:
+      "You changed a ConfigMap that the api Pods read only at startup. The Deployment itself did not change. How do you get the Pods to use the new values without downtime?",
+    options: [
+      { id: "a", text: "kubectl rollout undo deployment/api" },
+      { id: "b", text: "kubectl rollout status deployment/api" },
+      { id: "c", text: "kubectl apply the unchanged Deployment manifest again" },
+      { id: "d", text: "kubectl rollout restart deployment/api" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "restart changes the template through the restartedAt annotation, so new Pods roll out and read the new ConfigMap. Applying an unchanged manifest changes nothing, so no rollout starts. undo would switch to an older template.",
+  },
 ];

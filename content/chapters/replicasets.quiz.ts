@@ -337,4 +337,79 @@ export const quiz: QuizQuestion[] = [
     explanation:
       "Existing Pods keep the image they were created with. The replacement is built from the current template, so it runs v2.",
   },
+  {
+    id: "replicasets-scale-command",
+    topic: "Scaling",
+    difficulty: "beginner",
+    question: "Which command changes the frontend ReplicaSet to 5 Pods, and which field does it update?",
+    options: [
+      { id: "a", text: "kubectl apply --replicas=5 frontend, which updates status.replicas" },
+      { id: "b", text: "kubectl create replicaset frontend --replicas=5, which updates metadata.replicas" },
+      { id: "c", text: "kubectl scale replicaset frontend --replicas=5, which updates spec.replicas" },
+      { id: "d", text: "kubectl run frontend --count=5, which updates spec.template.replicas" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "kubectl scale takes the resource type, its name, and --replicas. It changes the desired count in spec.replicas, and the controller then creates or deletes Pods to match.",
+  },
+  {
+    id: "replicasets-shared-labels",
+    topic: "Labels and selectors",
+    difficulty: "intermediate",
+    question: "Two separate ReplicaSets in one namespace both select app: web. Why is that a problem?",
+    options: [
+      { id: "a", text: "The API server merges them into a single ReplicaSet" },
+      { id: "b", text: "The second ReplicaSet is rejected when you create it" },
+      { id: "c", text: "It is not a problem, because each ReplicaSet only looks at Pods it created by name" },
+      { id: "d", text: "Their selectors overlap, so they can fight over the same Pods, adopting or deleting Pods meant for the other" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "Selection is by label, not by name, so overlapping selectors make both controllers see the same Pods. Give each ReplicaSet a selector that only its own Pods carry. The API server does not check for overlap between workloads.",
+  },
+  {
+    id: "replicasets-yaml-own-labels",
+    topic: "ReplicaSet YAML",
+    difficulty: "intermediate",
+    question: "In a ReplicaSet manifest, what do the labels under the top-level metadata.labels do?",
+    options: [
+      { id: "a", text: "They select the Pods the ReplicaSet counts" },
+      { id: "b", text: "They are copied onto every Pod the ReplicaSet creates" },
+      { id: "c", text: "They label the ReplicaSet object itself, for filtering, and do not select Pods" },
+      { id: "d", text: "They must equal spec.selector.matchLabels or the manifest is rejected" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "metadata.labels belong to the ReplicaSet itself. Pods are selected by spec.selector, and new Pods get their labels from spec.template.metadata.labels, which is the part that must match the selector.",
+  },
+  {
+    id: "replicasets-yaml-extra-template-labels",
+    topic: "ReplicaSet YAML",
+    difficulty: "advanced",
+    question: "selector.matchLabels is app: frontend, and the template labels are app: frontend, version: v1. What happens when you apply it?",
+    options: [
+      { id: "a", text: "It is rejected, because the template labels must equal the selector exactly" },
+      { id: "b", text: "It is accepted, but new Pods only get app: frontend" },
+      { id: "c", text: "It is accepted, and the selector is widened to include version: v1" },
+      { id: "d", text: "It is accepted; the template may carry extra labels as long as it matches the selector" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "The rule is that Pods created from the template must match the selector. A Pod labelled app: frontend, version: v1 does match app: frontend, so extra labels are fine. The selector is never changed for you.",
+  },
+  {
+    id: "replicasets-scale-zero",
+    topic: "Scaling",
+    difficulty: "intermediate",
+    question: "You want to stop all of a ReplicaSet's Pods for now but keep the ReplicaSet so you can start them again later. What do you run?",
+    options: [
+      { id: "a", text: "kubectl scale replicaset frontend --replicas=0" },
+      { id: "b", text: "kubectl delete pods -l app=frontend" },
+      { id: "c", text: "kubectl delete replicaset frontend" },
+      { id: "d", text: "kubectl label pods -l app=frontend app-" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "Scaling to 0 deletes the Pods and keeps the ReplicaSet, so scaling up again recreates them. Deleting its Pods only produces replacements, deleting the ReplicaSet removes it too, and removing the label releases the Pods while the ReplicaSet creates new ones.",
+  },
 ];

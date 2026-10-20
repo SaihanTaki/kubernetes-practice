@@ -244,8 +244,8 @@ export function containerEnv(c: Cluster, p: Pod): Record<string, string> {
   const env: Record<string, string> = {};
   for (const e of p.container.envFrom ?? []) {
     const values = e.configMapRef ? data("ConfigMap", e.configMapRef.name) : data("Secret", e.secretRef!.name);
-    // The kubelet skips keys that are not valid variable names.
-    for (const [k, v] of Object.entries(values)) if (/^[-._a-zA-Z][-._a-zA-Z0-9]*$/.test(`${e.prefix ?? ""}${k}`)) env[`${e.prefix ?? ""}${k}`] = v;
+    // Since 1.34 any printable name without "=" is valid, which every ConfigMap and Secret key is.
+    for (const [k, v] of Object.entries(values)) env[`${e.prefix ?? ""}${k}`] = v;
   }
   for (const e of p.container.env ?? []) {
     const cm = e.valueFrom?.configMapKeyRef;

@@ -1,6 +1,7 @@
 import { expect, test, type Page } from "@playwright/test";
 import { chapters, sections } from "../../content/chapters";
 import { data as declarative } from "../../content/chapters/declarative.data";
+import { data as deployments } from "../../content/chapters/deployments.data";
 
 const errors: string[] = [];
 test.beforeEach(({ page }) => {
@@ -142,14 +143,14 @@ test("quiz gives feedback and can be retried", async ({ page }) => {
   const quiz = page.getByRole("region", { name: "Quiz" });
   await quiz.getByRole("button", { name: "A ReplicaSet owned by the Deployment" }).click();
   await expect(quiz.getByText("Correct.")).toBeVisible();
-  await expect(quiz.getByText("question 1 / 22")).toBeVisible();
+  await expect(quiz.getByText(`question 1 / ${deployments.quiz.length}`)).toBeVisible();
   await quiz.getByRole("button", { name: "Next question" }).click();
   await quiz.getByRole("button", { name: "The Deployment drops to 2 replicas" }).click();
   await expect(quiz.getByText("Not quite.")).toBeVisible();
   await expect(quiz.getByText(/Desired state is still 3/)).toBeVisible();
   await quiz.getByRole("button", { name: "Retry quiz" }).click();
   await expect(quiz.getByText("0 answered, 0 correct")).toBeVisible();
-  await expect(quiz.getByText("question 1 / 22")).toBeVisible();
+  await expect(quiz.getByText(`question 1 / ${deployments.quiz.length}`)).toBeVisible();
 });
 
 test("cheatsheet searches and copies", async ({ page, context }) => {

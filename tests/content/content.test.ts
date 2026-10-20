@@ -30,6 +30,7 @@ describe("chapters", () => {
     expect(existsSync(`content/chapters/${c.slug}.mdx`)).toBe(true);
     expect(c.data.objectives.length).toBeGreaterThan(0);
     expect(c.data.quiz.length).toBeGreaterThanOrEqual(20);
+    expect(c.data.quiz.length).toBeLessThanOrEqual(50);
     expect(c.data.quiz.some((q) => /yaml/i.test(q.topic))).toBe(true);
     expect(c.data.manifests.length).toBeGreaterThan(0);
   });
