@@ -19,6 +19,7 @@ import { data as volumes } from "./chapters/volumes.data";
 import { data as daemonsetsStatefulsets } from "./chapters/daemonsets-statefulsets.data";
 import { data as scheduling } from "./chapters/scheduling.data";
 import { data as rbac } from "./chapters/rbac.data";
+import { data as troubleshooting } from "./chapters/troubleshooting.data";
 import type { ChapterData, Difficulty } from "./types";
 
 export type Chapter = {
@@ -222,6 +223,15 @@ export const chapters: Chapter[] = [
     difficulty: "advanced",
     ready: true,
     data: rbac,
+  },
+  {
+    slug: "troubleshooting",
+    section: "Security & Operations",
+    title: "Troubleshooting",
+    summary: "A method and a symptom table for finding why a workload is not working.",
+    difficulty: "advanced",
+    ready: true,
+    data: troubleshooting,
   },
 ];
 

@@ -1,0 +1,247 @@
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## Where the evidence is
+
+When an app on Kubernetes breaks, the cause is almost always recorded somewhere: in a Pod's status, in an event, in a container's logs, or in the objects around the Pod. Troubleshooting is mostly knowing which of those to read first. This chapter puts the commands from earlier chapters into one order and maps the common failures to the command that shows their cause.
+
+## The method
+
+Work through these steps in order. Each one tells you whether you need the next.
+
+1. **Status.** `kubectl get pods` (add `-o wide` for the node and Pod IP). STATUS, READY, and RESTARTS usually name the failing layer.
+2. **Describe and events.** `kubectl describe pod <pod>` shows the container state, the last termination reason, probe settings, and the Events at the bottom. `kubectl get events --field-selector involvedObject.name=<pod>` lists the same events on their own. Events record what Kubernetes itself saw: scheduling, image pulls, missing config, probe failures.
+3. **Logs.** `kubectl logs <pod>` shows what the app printed. For a container that crashed and restarted, `kubectl logs <pod> --previous` shows the output of the one that died. `kubectl logs deployment/<name>` picks one of the Deployment's Pods for you.
+4. **Exec.** `kubectl exec <pod> -- env` shows the environment the process got, `-- cat <file>` a mounted config file, and `-- wget -qO- -T 3 http://<service>` tests a call from inside the cluster.
+5. **The owner and the Service.** If no Pods exist, `kubectl describe replicaset` shows why the controller could not create them. If the Pods are fine but requests fail, check `kubectl get endpoints`, the Service ports, and the Ingress.
+
+Step through the decision tree to see which command each status leads to. Select a box for what to look for.
+
+<Diagram id="troubleshooting-decision-tree" />
+
+<Callout title="Common mistake: deleting the Pod first">
+  Deleting a failing Pod makes its ReplicaSet create an identical replacement, which fails the same way. You also lose
+  the events and the previous container's logs. Read the evidence, fix the template or the config, then let the
+  Deployment roll out.
+</Callout>
+
+## Symptoms and causes
+
+| Symptom | Usual cause | Command that shows it | Background |
+| --- | --- | --- | --- |
+| `Pending`, node `<none>` | Requests larger than any node has free, untolerated taint, nodeSelector or affinity that no node matches | `kubectl describe pod`, FailedScheduling event | [Resources](/chapters/resources), [Scheduling](/chapters/scheduling) |
+| `ErrImagePull`, `ImagePullBackOff` | Wrong image name or tag, private registry without credentials | `kubectl describe pod`, Failed event | [Pods](/chapters/pods) |
+| `CrashLoopBackOff` | The app exits: bad config, missing variable, a dependency it cannot reach | `kubectl logs <pod> --previous` | [Pods](/chapters/pods) |
+| `CreateContainerConfigError` | A ConfigMap, Secret, or key named in `env` or `envFrom` does not exist | `kubectl describe pod`, Failed event | [Configuration](/chapters/config) |
+| `OOMKilled` (then `CrashLoopBackOff`) | Memory limit lower than what the app uses | `kubectl describe pod`, Last State | [Resources](/chapters/resources) |
+| `Running` but `0/1` | Readiness probe fails: wrong port or path, app not ready | `kubectl describe pod`, Unhealthy events | [Health checks](/chapters/health-checks) |
+| Service has no endpoints | Selector does not match Pod labels, or no Pod is ready | `kubectl get endpoints`, `kubectl get pods --show-labels` | [Services](/chapters/services), [Labels](/chapters/labels) |
+| Endpoints exist, connection refused | `targetPort` is not the container port | `kubectl get endpoints`, `kubectl describe service` | [Services](/chapters/services) |
+| Ingress returns 404 | No rule matches the host or path | `kubectl describe ingress` | [Ingress](/chapters/ingress) |
+| Ingress returns 503 | Backend Service missing or without ready endpoints | `kubectl describe ingress` | [Ingress](/chapters/ingress) |
+| Calls between Pods time out | A NetworkPolicy drops the traffic | `kubectl get netpol`, `kubectl describe netpol` | [Network policies](/chapters/network-policies) |
+| `Error from server (Forbidden)` | The user or ServiceAccount lacks an RBAC permission | `kubectl auth can-i <verb> <resource> --as=<user>` | [RBAC](/chapters/rbac) |
+
+A Pod shows one problem at a time, in the order of its lifecycle: scheduling, then the image pull, then container config, then the running app. Fixing one problem often reveals the next, so check the status again after every fix.
+
+## One example per symptom
+
+### Pending
+
+```bash
+kubectl describe pod web-6f7d9c8b5-x2lkq
+```
+
+```text
+Events:
+  Type     Reason            Age   From               Message
+  ----     ------            ----  ----               -------
+  Warning  FailedScheduling  20s   default-scheduler  0/3 nodes are available: 1 node(s) had untolerated taint {node-role.kubernetes.io/control-plane: }, 2 Insufficient memory. preemption: 0/3 nodes are available: 1 Preemption is not helpful for scheduling, 2 No preemption victims found for incoming pod.
+```
+
+The message counts nodes per reason. Here the control plane is excluded by its taint and both workers lack the memory the Pod requests. Lower the request or add capacity. `kubectl describe node <name>` shows how much each node has already allocated.
+
+### ImagePullBackOff
+
+```bash
+kubectl describe pod web-6f7d9c8b5-x2lkq
+```
+
+```text
+  Warning  Failed     12s   kubelet  Failed to pull image "nginx:1.72": ... not found
+  Warning  Failed     12s   kubelet  Error: ErrImagePull
+  Normal   BackOff    1s    kubelet  Back-off pulling image "nginx:1.72"
+```
+
+The event repeats the exact image string. Compare it with what the registry has. `ErrImagePull` is the failed attempt; `ImagePullBackOff` is the wait before the next one.
+
+### CrashLoopBackOff
+
+```bash
+kubectl logs worker-5c8d7b9f6-q8tzn --previous
+```
+
+```text
+error: QUEUE_URL is not set
+```
+
+`--previous` reads the container that exited. Without it you may read a container that has just started and printed nothing yet. `describe pod` adds `Last State: Terminated` with the exit code.
+
+### CreateContainerConfigError
+
+```bash
+kubectl describe pod api-7b9f5d6c4-m4kzp
+```
+
+```text
+  Warning  Failed  5s (x3 over 30s)  kubelet  Error: couldn't find key db_host in ConfigMap default/api-config
+```
+
+The container was never created, so there are no logs. Create the key, or fix the reference, and the kubelet retries on its own.
+
+### OOMKilled
+
+```bash
+kubectl describe pod api-7b9f5d6c4-m4kzp
+```
+
+```text
+    Last State:     Terminated
+      Reason:       OOMKilled
+      Exit Code:    137
+```
+
+The kernel killed the container for using more memory than its limit. `kubectl top pods` shows current usage to compare with the limit.
+
+### Running but 0/1
+
+```bash
+kubectl describe pod api-7b9f5d6c4-m4kzp
+```
+
+```text
+  Warning  Unhealthy  4s (x12 over 60s)  kubelet  Readiness probe failed: Get "http://10.244.1.7:80/ready": dial tcp 10.244.1.7:80: connect: connection refused
+```
+
+The probe URL shows the port and path the kubelet tried. Here nothing listens on 80. The Pod is never restarted for this, it just gets no traffic.
+
+### Service with no endpoints
+
+```bash
+kubectl get endpoints api
+kubectl describe service api
+kubectl get pods --show-labels
+```
+
+```text
+NAME   ENDPOINTS   AGE
+api    <none>      5m
+```
+
+Compare the `Selector:` line of the Service with the Pod labels. If they match, the Pods are not ready; go back to the 0/1 case.
+
+### Connection refused through a Service
+
+```bash
+kubectl exec client -- wget -qO- -T 3 http://api
+```
+
+```text
+wget: can't connect to remote host (10.96.0.15): Connection refused
+```
+
+If `kubectl get endpoints api` lists Pods, compare the port it shows with the `containerPort`. A Service with `targetPort: 80` in front of an app on 8080 refuses every request.
+
+### Ingress 404 or 503
+
+```bash
+curl http://shop.example.com/
+kubectl describe ingress shop
+```
+
+```text
+Rules:
+  Host              Path  Backends
+  ----              ----  --------
+  shop.example.com
+                    /     web:80 (<error: endpoints "web" not found>)
+```
+
+A 404 from the controller means no rule matched the host or path, so check the spelling of both. A 503 means a rule matched, but the backend has nowhere to send the request, as in the output above: the Service is missing or has no ready endpoints.
+
+### Timeouts from a NetworkPolicy
+
+```bash
+kubectl exec frontend-6d4f8c7b9-k2mzt -- wget -qO- -T 3 http://api
+kubectl get netpol
+```
+
+```text
+wget: download timed out
+```
+
+Refused and timed out mean different things. Refused: the request arrived and nothing listened. Timed out with ready endpoints on the right port: packets were dropped, which is what a NetworkPolicy does. `kubectl describe netpol` shows which Pods it selects and which sources it allows. If the client namespace restricts egress, DNS needs an allow rule too.
+
+### Forbidden
+
+```text
+Error from server (Forbidden): pods is forbidden: User "jane" cannot list resource "pods" in API group "" in the namespace "default"
+```
+
+```bash
+kubectl auth can-i list pods --as=jane
+kubectl auth can-i --list --as=jane
+```
+
+The message names the user, verb, resource, API group, and namespace. Those five are what the missing Role rule and RoleBinding need. For an app, the user is `system:serviceaccount:<namespace>:<serviceaccount>`.
+
+<Callout title="Common mistake: reading the wrong container's logs">
+  After a crash, kubectl logs without --previous shows the container that replaced it. If it has only just started,
+  the logs are empty or show normal startup lines, and the error looks like it never happened.
+</Callout>
+
+## Following a request
+
+When the Pods look healthy and users still get errors, follow the request hop by hop. Each hop has one command that shows whether the request gets past it.
+
+<Diagram id="troubleshooting-request-path" />
+
+Checklist, from the outside in:
+
+1. `curl` the URL yourself and keep the exact error.
+2. `kubectl describe ingress <name>`: right host and path, backend Service and port, endpoints listed.
+3. `kubectl describe service <name>`: the port the Ingress uses exists, and `targetPort` is the container port.
+4. `kubectl get endpoints <name>`: ready Pod IPs are listed. Empty means a selector or readiness problem.
+5. `kubectl exec <another-pod> -- wget -qO- -T 3 http://<pod-ip>:<port>/`: the app answers directly. If this works and step 4 is fine but calls through the Service time out, check NetworkPolicies.
+
+## A broken Deployment and Service
+
+This Deployment and Service have one defect on almost every line that matters. Each note says which symptom it produces. On a real cluster you would meet them one at a time: first the Pod stays Pending, then the image pull fails, then the container config, then the crash, then readiness, and only then the Service.
+
+<YamlWalkthrough id="troubleshooting-broken-deployment" />
+
+<YamlWalkthrough id="troubleshooting-broken-service" />
+
+<Callout title="Common mistake: fixing one thing and walking away">
+  After each fix, run kubectl get pods again and go back to step 1. A Pod that leaves Pending can land straight in
+  ImagePullBackOff. Done means the request from the client succeeds, not that one error went away.
+</Callout>
+
+## Practice
+
+The worker Deployment crashes on start. Find out why from its logs and fix its ConfigMap.
+
+<Lab id="troubleshooting-worker" />
+
+The shop has three faults at once across its Deployment and Service. Follow the method and the request path until `curl http://shop.example.com/` returns the nginx page.
+
+<Lab id="troubleshooting-shop" />
+
+## Check yourself
+
+<Quiz id="troubleshooting" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).
