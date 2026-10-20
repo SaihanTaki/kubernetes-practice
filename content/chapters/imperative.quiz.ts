@@ -328,4 +328,67 @@ export const quiz: QuizQuestion[] = [
     explanation:
       "Once a file manages the Deployment, the file is the source of truth. Changing it and applying keeps the file and cluster in step; set image would be undone by the next apply.",
   },
+  {
+    id: "imperative-generated-namespace",
+    topic: "Generated YAML",
+    difficulty: "intermediate",
+    question:
+      "The YAML generated without -n contains metadata.namespace: default. You want the same file to work with kubectl apply -f web.yaml -n dev and -n staging. What do you do?",
+    options: [
+      { id: "a", text: "Nothing; -n always overrides the namespace in the file" },
+      { id: "b", text: "Delete the namespace line, so the namespace comes from -n or your context" },
+      { id: "c", text: "Change it to namespace: all" },
+      { id: "d", text: "Move it to spec.namespace" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "A namespace written in the file pins the object to it, and kubectl refuses when -n disagrees. Without the line, the namespace comes from -n or your context, so one file serves every namespace.",
+  },
+  {
+    id: "imperative-same-objects",
+    topic: "Imperative vs declarative",
+    difficulty: "beginner",
+    question:
+      "One Deployment was made with kubectl create deployment, another with kubectl apply -f from an equivalent file. How do the resulting objects differ in the cluster?",
+    options: [
+      { id: "a", text: "The imperative one has no ReplicaSet" },
+      { id: "b", text: "The imperative one cannot be scaled later" },
+      { id: "c", text: "They are the same kind of object, created through the same API server" },
+      { id: "d", text: "The declarative one runs on dedicated nodes" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "Both styles send objects to the same API server and the same controllers act on them. The difference is where the description of your app lives: in your shell history or in a file.",
+  },
+  {
+    id: "imperative-registry-name",
+    topic: "Generated YAML",
+    difficulty: "advanced",
+    question:
+      "You run kubectl create deployment api --image=registry.example.com/team/api-server:2.1. What container name must you use with kubectl set image?",
+    options: [
+      { id: "a", text: "api" },
+      { id: "b", text: "api-server" },
+      { id: "c", text: "registry.example.com/team/api-server" },
+      { id: "d", text: "api-server:2.1" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "kubectl names the container after the image without the registry, path, or tag, so it is api-server. The Deployment name, api, is not the container name.",
+  },
+  {
+    id: "imperative-find-container",
+    topic: "kubectl set image",
+    difficulty: "intermediate",
+    question: "kubectl set image fails because you guessed the container name wrong. How do you find the real name?",
+    options: [
+      { id: "a", text: "kubectl get pods, whose default table has a container name column" },
+      { id: "b", text: "It is always the same as the Deployment name" },
+      { id: "c", text: "kubectl describe deployment api or kubectl get deployment api -o yaml" },
+      { id: "d", text: "kubectl set image --list deployment/api" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "describe and -o yaml show the Pod template, including each container's name. The container name often differs from the Deployment name, which is exactly why guessing fails.",
+  },
 ];

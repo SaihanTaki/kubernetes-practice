@@ -340,4 +340,67 @@ export const quiz: QuizQuestion[] = [
     explanation:
       "With no extra Pods allowed and no Pods allowed to be missing, the Deployment could never swap an old Pod for a new one. Validation rejects this combination, so at least one value must be above 0.",
   },
+  {
+    id: "deploy-bare-pod",
+    topic: "Deployments",
+    difficulty: "beginner",
+    question: "You created a Pod directly with kind: Pod, not through a Deployment. Its node fails. What happens to the Pod?",
+    options: [
+      { id: "a", text: "The scheduler moves it to a healthy node" },
+      { id: "b", text: "It is gone, and nothing creates a replacement" },
+      { id: "c", text: "Kubernetes creates a ReplicaSet for it automatically" },
+      { id: "d", text: "A Deployment with the same labels adopts and restarts it" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "A Pod on its own has no controller watching the count, so a lost Pod stays lost. The scheduler only places new Pods; it never moves existing ones. This is why you run Pods through a Deployment.",
+  },
+  {
+    id: "deploy-stop-app",
+    topic: "Deployments",
+    difficulty: "beginner",
+    question:
+      "You want to stop every Pod of the web Deployment for now but keep the Deployment so you can start it again later. What do you do?",
+    options: [
+      { id: "a", text: "kubectl delete pods -l app=web" },
+      { id: "b", text: "kubectl delete deployment web" },
+      { id: "c", text: "kubectl scale deployment web --replicas=0" },
+      { id: "d", text: "kubectl scale replicaset web-7c5ddbdf54 --replicas=0" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "Scaling the Deployment to 0 removes the Pods and keeps the Deployment. Deleting the Pods only makes the ReplicaSet create replacements, deleting the Deployment removes it for good, and scaling the ReplicaSet is reverted by the Deployment.",
+  },
+  {
+    id: "deploy-rs-template",
+    topic: "Deployments",
+    difficulty: "intermediate",
+    question:
+      "You manage Pods with a ReplicaSet on its own, no Deployment, and change the image in its Pod template. What happens to the running Pods?",
+    options: [
+      { id: "a", text: "They are replaced one at a time with the new image" },
+      { id: "b", text: "Nothing; they keep the old image, and only Pods created later use the new one" },
+      { id: "c", text: "They are all deleted and recreated with the new image" },
+      { id: "d", text: "The ReplicaSet creates a second ReplicaSet for the new template" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "A ReplicaSet only keeps the Pod count right; it has no concept of an update. Rolling Pods over to a new template, with a new ReplicaSet, is what a Deployment adds.",
+  },
+  {
+    id: "deploy-scale-down",
+    topic: "Deployments",
+    difficulty: "intermediate",
+    question:
+      "A Deployment has 5 Pods: 4 ready and 1 not ready. You scale it to 4. Which Pod does the ReplicaSet remove first?",
+    options: [
+      { id: "a", text: "The oldest ready Pod" },
+      { id: "b", text: "A random Pod, readiness does not matter" },
+      { id: "c", text: "The Pod that is not ready" },
+      { id: "d", text: "The Pod that was created first" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "When scaling down, the ReplicaSet removes Pods that are not ready before ready ones, so serving capacity is kept. Removing a ready Pod first would cut capacity for no reason.",
+  },
 ];
