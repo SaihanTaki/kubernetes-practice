@@ -1,10 +1,17 @@
+import { admit, withDefaultRequests } from "./admission";
+import { recordEvent } from "./events";
+import { imageInfo } from "./images";
+import { MI, parseMemory, parseQuantity } from "./quantity";
+import { evictUntolerated, schedule } from "./scheduler";
 import type {
   Cluster,
   Container,
   Deployment,
   Kind,
   Labels,
+  Node,
   Pod,
+  PodOwnerKind,
   PodTemplate,
   PortRef,
   Probe,
@@ -16,6 +23,10 @@ import type {
 // Characters Kubernetes uses for generated name suffixes (no vowels, no look-alikes).
 const ALPHABET = "bcdfghjklmnpqrstvwxz2456789";
 export const WORKERS = ["worker-1", "worker-2"];
+export const CONTROL_PLANE = "control-plane";
+export const CONTROL_PLANE_TAINT = "node-role.kubernetes.io/control-plane";
+/** Kinds whose objects have no namespace (metadata.namespace is ""). */
+export const CLUSTER_SCOPED: ReadonlySet<string> = new Set(["Node", "Namespace"]);
 export const SECONDS_PER_COMMAND = 5;
 export const REVISION = "deployment.kubernetes.io/revision";
 export const CHANGE_CAUSE = "kubernetes.io/change-cause";
@@ -54,23 +65,68 @@ export function matches(labels: Labels, selector: Labels): boolean {
   return Object.entries(selector).every(([k, v]) => labels[k] === v);
 }
 
+const pool = (c: Cluster, kind: Kind): Resource[] => (kind === "Node" ? c.nodes : c.resources);
+
 export function find<K extends Kind>(c: Cluster, kind: K, namespace: string, name: string) {
-  return c.resources.find(
+  return pool(c, kind).find(
     (r) => r.kind === kind && r.metadata.namespace === namespace && r.metadata.name === name,
   ) as Extract<Resource, { kind: K }> | undefined;
 }
 
 export function list<K extends Kind>(c: Cluster, kind: K, namespace?: string) {
-  return c.resources.filter(
+  return pool(c, kind).filter(
     (r) => r.kind === kind && (namespace === undefined || r.metadata.namespace === namespace),
   ) as Extract<Resource, { kind: K }>[];
 }
 
+export function addResource(c: Cluster, r: Resource) {
+  if (r.kind === "Node") c.nodes.push(r);
+  else c.resources.push(r);
+}
+
+export function removeResource(c: Cluster, r: Resource) {
+  if (r.kind === "Node") c.nodes = c.nodes.filter((x) => x !== r);
+  else c.resources = c.resources.filter((x) => x !== r);
+}
+
 export const isReady = (p: Pod) => p.status === "Running" && p.ready;
 
+/** A Pod whose containers ran to completion: it holds no resources and quota no longer counts it. */
+export const isFinished = (p: Pod) => p.status === "Completed" || p.status === "Error";
+
+export const ownerKindOf = (p: Pod): PodOwnerKind => p.ownerKind ?? "ReplicaSet";
+
 export function podsOf(c: Cluster, rs: ReplicaSet): Pod[] {
-  return list(c, "Pod", rs.metadata.namespace).filter((p) => p.owner === rs.metadata.name);
+  return list(c, "Pod", rs.metadata.namespace).filter((p) => p.owner === rs.metadata.name && ownerKindOf(p) === "ReplicaSet");
 }
+
+/** Pods of a Deployment (through its ReplicaSets) or of any direct Pod owner. */
+export function podsOfOwner(c: Cluster, kind: "Deployment" | PodOwnerKind, namespace: string, name: string): Pod[] | undefined {
+  if (kind === "Deployment") {
+    const d = find(c, "Deployment", namespace, name);
+    return d && replicaSetsOf(c, d).flatMap((rs) => podsOf(c, rs));
+  }
+  if (!find(c, kind, namespace, name)) return undefined;
+  return list(c, "Pod", namespace).filter((p) => p.owner === name && ownerKindOf(p) === kind);
+}
+
+function node(c: Cluster, name: string, zone: string, memory: string): Node {
+  const labels: Labels = { "kubernetes.io/hostname": name, "kubernetes.io/os": "linux", "topology.kubernetes.io/zone": zone };
+  const control = name === CONTROL_PLANE;
+  if (control) labels[`node-role.kubernetes.io/${CONTROL_PLANE}`] = "";
+  return {
+    kind: "Node",
+    // Not from meta(): node uids must not use c.seq, which names generated Pods.
+    metadata: { uid: `node/${name}`, name, namespace: "", labels, annotations: {}, createdAt: c.clock },
+    taints: control ? [{ key: CONTROL_PLANE_TAINT, effect: "NoSchedule" }] : [],
+    unschedulable: false,
+    allocatable: { cpu: "2", memory, pods: 110 },
+  };
+}
+
+export const defaultNodes = (c: Cluster) => [node(c, CONTROL_PLANE, "zone-a", "2Gi"), node(c, WORKERS[0], "zone-a", "4Gi"), node(c, WORKERS[1], "zone-b", "4Gi")];
+
+export const workerNode = (c: Cluster, name: string) => node(c, name, "zone-a", "4Gi");
 
 export function replicaSetsOf(c: Cluster, d: Deployment): ReplicaSet[] {
   return list(c, "ReplicaSet", d.metadata.namespace).filter((rs) => rs.owner === d.metadata.name);
@@ -86,49 +142,28 @@ export const revisionOf = (rs: ReplicaSet) => Number(rs.metadata.annotations[REV
 
 export const containerName = (image: string) => image.split(":")[0].split("/").at(-1)!;
 
+/** A new Pod, not yet bound to a node: the scheduler places it at the end of the command. */
 export function newPod(c: Cluster, name: string, namespace: string, t: PodTemplate): Pod {
-  const node = WORKERS[c.seq % WORKERS.length];
-  return {
+  const pod: Pod = {
     kind: "Pod",
     metadata: meta(c, name, namespace, t.labels, t.annotations),
     image: t.image,
-    container: structuredClone(t.container),
-    node,
-    status: "ContainerCreating",
+    container: withDefaultRequests(structuredClone(t.container)),
+    node: "",
+    status: "Pending",
     ready: false,
     restarts: 0,
   };
+  if (t.spec) pod.spec = structuredClone(t.spec);
+  return pod;
 }
 
-/** Stable per Pod: each worker gets its own /24 like a real CNI. */
+/** Stable per Pod: each node gets its own /24 like a real CNI (control-plane 0, worker-N N). */
 export function podIP(p: Pod): string {
-  return `10.244.${WORKERS.indexOf(p.node) + 1}.${(Number(p.metadata.uid) % 250) + 2}`;
+  return `10.244.${Number(p.node.match(/-(\d+)$/)?.[1] ?? 0)}.${(Number(p.metadata.uid) % 250) + 2}`;
 }
 
-// --- Container runtime: what each known image does ---
-
-type ImageInfo = { tags: string[]; http?: number; paths?: string[]; tcp?: number; crashes?: string[] };
-
-const IMAGES: Record<string, ImageInfo> = {
-  nginx: { tags: ["1.25", "1.26", "1.27", "1.28", "latest"], http: 80, paths: ["/"] },
-  httpd: { tags: ["2.4", "latest"], http: 80, paths: ["/"] },
-  redis: { tags: ["7", "7.2", "latest"], tcp: 6379 },
-  busybox: { tags: ["1.36", "latest"] },
-  "example/api": { tags: ["1.0", "1.1", "2.0", "latest"], http: 8080, paths: ["/", "/healthz", "/ready"], crashes: ["2.0"] },
-};
-
-function parseImage(image: string) {
-  const colon = image.lastIndexOf(":");
-  return colon > image.lastIndexOf("/") ? { repo: image.slice(0, colon), tag: image.slice(colon + 1) } : { repo: image, tag: "latest" };
-}
-
-/** Unknown repositories behave like nginx, so any image name works for simple examples. */
-function imageInfo(image: string) {
-  const { repo, tag } = parseImage(image);
-  const info = IMAGES[repo];
-  if (!info) return { ...IMAGES.nginx, pullable: true, crashes: false };
-  return { ...info, pullable: info.tags.includes(tag), crashes: !!info.crashes?.includes(tag) };
-}
+// --- Container runtime ---
 
 export const pullError = (image: string) =>
   imageInfo(image).pullable ? null : `Failed to pull image "${image}": manifest for ${image} not found: manifest unknown`;
@@ -176,9 +211,35 @@ export function configError(c: Cluster, p: Pod): string | null {
   return null;
 }
 
-/** Whether the container keeps getting restarted: a crashing image or a failing liveness or startup probe. */
+/** Whether the image needs more memory than the container's limit allows. */
+export function oomKilled(p: Pod) {
+  const limit = parseMemory(p.container.resources?.limits?.memory ?? "");
+  return limit !== null && limit < imageInfo(p.image).memoryMi * MI;
+}
+
+export type QosClass = "Guaranteed" | "Burstable" | "BestEffort";
+
+/** Guaranteed when cpu and memory limits are set and requests equal them; BestEffort when nothing is set. */
+export function qosClass(ctr: Container): QosClass {
+  const { requests = {}, limits = {} } = ctr.resources ?? {};
+  if (!Object.keys(requests).length && !Object.keys(limits).length) return "BestEffort";
+  const same = (["cpu", "memory"] as const).every(
+    (r) => limits[r] !== undefined && parseQuantity(r, limits[r]) === parseQuantity(r, requests[r] ?? limits[r]),
+  );
+  return same ? "Guaranteed" : "Burstable";
+}
+
+/** Whether the container keeps getting restarted: a crashing image, an OOM kill, or a failing liveness or startup probe. */
 export const crashes = (p: Pod) =>
-  imageInfo(p.image).crashes || !!probeFailure(p, p.container.livenessProbe) || !!probeFailure(p, p.container.startupProbe);
+  imageInfo(p.image).crashes || oomKilled(p) || !!probeFailure(p, p.container.livenessProbe) || !!probeFailure(p, p.container.startupProbe);
+
+/** Why the previous container run ended, as `describe` shows under Last State, or null. */
+export function lastTermination(p: Pod): { reason: string; exitCode: number } | null {
+  if (!p.restarts) return null;
+  if (imageInfo(p.image).crashes) return { reason: "Error", exitCode: 1 };
+  if (oomKilled(p)) return { reason: "OOMKilled", exitCode: 137 };
+  return null;
+}
 
 /** Pull the image, resolve config references and start the container. */
 export function start(c: Cluster, p: Pod) {
@@ -188,7 +249,8 @@ export function start(c: Cluster, p: Pod) {
   else if (imageInfo(p.image).crashes) {
     p.status = "CrashLoopBackOff";
     p.restarts = Math.max(p.restarts, 1);
-  } else {
+  } else if (oomKilled(p)) p.status = "OOMKilled";
+  else {
     p.status = "Running";
     p.ready = !crashes(p) && !probeFailure(p, p.container.readinessProbe);
   }
@@ -199,6 +261,7 @@ function tick(p: Pod) {
   if (!crashes(p)) return;
   p.restarts++;
   if (imageInfo(p.image).crashes || p.restarts >= 3) p.status = "CrashLoopBackOff";
+  else if (oomKilled(p)) p.status = "OOMKilled";
 }
 
 export function endpointsOf(c: Cluster, svc: Service): { pod: Pod; ip: string; ports: number[] }[] {
@@ -215,11 +278,29 @@ export function endpointsOf(c: Cluster, svc: Service): { pod: Pod; ip: string; p
 
 // --- Controllers ---
 
-function createPod(c: Cluster, rs: ReplicaSet) {
-  const pod = newPod(c, `${rs.metadata.name}-${suffix(c.seq, 5)}`, rs.metadata.namespace, rs.template);
-  pod.owner = rs.metadata.name;
+/**
+ * Creates a Pod for a controller, through admission (LimitRange, ResourceQuota). A rejection becomes a
+ * FailedCreate event on the owner and no Pod. Returns whether the Pod was created.
+ */
+export function spawnPod(c: Cluster, owner: Extract<Resource, { kind: PodOwnerKind }>, name: string, t: PodTemplate, source: string): boolean {
+  const seq = c.seq;
+  const pod = newPod(c, name, owner.metadata.namespace, t);
+  pod.owner = owner.metadata.name;
+  if (owner.kind !== "ReplicaSet") pod.ownerKind = owner.kind;
+  const denied = admit(c, pod);
+  if (denied) {
+    // Give the next attempt the same name, so the event repeats (count++) instead of piling up.
+    c.seq = seq;
+    recordEvent(c, owner, "Warning", "FailedCreate", `Error creating: pods "${name}" is forbidden: ${denied}`, source);
+    return false;
+  }
   c.resources.push(pod);
+  recordEvent(c, owner, "Normal", "SuccessfulCreate", `Created pod: ${name}`, source);
+  return true;
 }
+
+const createPod = (c: Cluster, rs: ReplicaSet) =>
+  spawnPod(c, rs, `${rs.metadata.name}-${suffix(c.seq, 5)}`, rs.template, "replicaset-controller");
 
 const scaled = (value: number | string, total: number, round: (n: number) => number) =>
   typeof value === "number" ? value : round((total * parseInt(value, 10)) / 100);
@@ -298,6 +379,11 @@ function reconcileDeployment(c: Cluster, d: Deployment) {
  * whose labels stop matching, and resources whose owner is gone are garbage collected.
  */
 export function reconcile(c: Cluster) {
+  // Pod garbage collection for deleted nodes, and NoExecute taints.
+  const nodes = new Set(c.nodes.map((n) => n.metadata.name));
+  c.resources = c.resources.filter((r) => !(r.kind === "Pod" && r.node && !nodes.has(r.node)));
+  evictUntolerated(c);
+
   for (const d of list(c, "Deployment")) reconcileDeployment(c, d);
 
   // shortcut: orphaned Pods are never adopted again, even if their labels match a selector later.
@@ -311,12 +397,12 @@ export function reconcile(c: Cluster) {
     (r) => !(r.kind === "ReplicaSet" && r.owner && !find(c, "Deployment", r.metadata.namespace, r.owner)),
   );
   c.resources = c.resources.filter(
-    (r) => !(r.kind === "Pod" && r.owner && !find(c, "ReplicaSet", r.metadata.namespace, r.owner)),
+    (r) => !(r.kind === "Pod" && r.owner && !find(c, ownerKindOf(r), r.metadata.namespace, r.owner)),
   );
 
   for (const rs of list(c, "ReplicaSet")) {
     const pods = podsOf(c, rs);
-    for (let i = pods.length; i < rs.replicas; i++) createPod(c, rs);
+    for (let i = pods.length; i < rs.replicas && createPod(c, rs); i++);
     if (pods.length > rs.replicas) {
       // Remove not-ready and newest Pods first, like the real controller prefers.
       const extra = [...pods]
@@ -325,15 +411,18 @@ export function reconcile(c: Cluster) {
       c.resources = c.resources.filter((r) => !extra.includes(r as Pod));
     }
   }
+  schedule(c);
 }
+
+const startable = (p: Pod) => !!p.node && (p.status === "ContainerCreating" || p.status === "CreateContainerConfigError");
 
 /** Advance the clock and the containers of Pods created before `seq`, so new Pods show ContainerCreating once. */
 export function settle(c: Cluster, seq: number) {
   c.clock += SECONDS_PER_COMMAND;
   for (const p of list(c, "Pod")) {
     if (Number(p.metadata.uid) >= seq) continue;
-    if (p.status === "ContainerCreating" || p.status === "CreateContainerConfigError") start(c, p);
-    else if (p.status === "Running" || p.status === "CrashLoopBackOff") tick(p);
+    if (startable(p)) start(c, p);
+    else if (p.status === "Running" || p.status === "CrashLoopBackOff" || p.status === "OOMKilled") tick(p);
   }
 }
 
@@ -342,7 +431,7 @@ export function converge(c: Cluster) {
   for (let i = 0; i < 100; i++) {
     const before = canonical(c.resources);
     reconcile(c);
-    for (const p of list(c, "Pod")) if (p.status === "ContainerCreating" || p.status === "CreateContainerConfigError") start(c, p);
+    for (const p of list(c, "Pod")) if (startable(p)) start(c, p);
     if (canonical(c.resources) === before) return;
   }
 }

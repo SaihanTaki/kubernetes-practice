@@ -1,12 +1,26 @@
 import { parseAllDocuments, stringify } from "yaml";
 import type { z } from "zod";
 import { CONFIG_KEY_RE, LABEL_KEY_RE, LABEL_VALUE_RE, manifestSchema } from "../manifest-schema";
+import { admit, defaultLimitRangeItem, formatHard, parseHard, QUOTA_KEYS, quotaUsed, withDefaultRequests } from "./admission";
 import {
+  age,
+  annotationText,
+  CommandError,
+  eventsSection,
+  fail,
+  labelText,
+  pad,
+  type Parsed,
+  type Requirement,
+  selects,
+  table,
+} from "./cli";
+import {
+  addResource,
   canonical,
   CHANGE_CAUSE,
-  configError,
+  CLUSTER_SCOPED,
   containerName,
-  crashes,
   currentReplicaSet,
   decodeBase64,
   encodeBase64,
@@ -15,30 +29,38 @@ import {
   HASH_LABEL,
   hash,
   isReady,
+  lastTermination,
+  qosClass,
   list,
   meta,
   newPod,
   podIP,
   podsOf,
-  probeFailure,
-  pullError,
   reconcile,
+  removeResource,
   replicaSetsOf,
   revisionOf,
   settle,
+  workerNode,
 } from "./cluster";
+import { eventsOf } from "./events";
+import { timestamp } from "./images";
+import { cordon, describeNode, drain, NODE_HEADER, NODE_WIDE_HEADER, nodeManifest, nodeRow, taint } from "./nodes";
+import { getEvents, kubeletEvents, logs, top } from "./observe";
 import type {
   Cluster,
   Container,
   Deployment,
   Kind,
   Labels,
+  Node,
   Pod,
+  PodSpec,
   PodTemplate,
-  PortRef,
   Probe,
   ReplicaSet,
   Resource,
+  ResourceQuota,
   RunResult,
   Secret,
   Service,
@@ -48,9 +70,7 @@ import type {
 
 type Manifest = z.infer<typeof manifestSchema>;
 
-class CommandError extends Error {}
-
-type ResourceType = Kind | "Namespace" | "Node" | "Endpoints";
+type ResourceType = Kind | "Namespace" | "Endpoints" | "Event";
 
 const TYPES: Record<string, ResourceType> = {
   po: "Pod", pod: "Pod", pods: "Pod",
@@ -62,17 +82,28 @@ const TYPES: Record<string, ResourceType> = {
   secret: "Secret", secrets: "Secret",
   ns: "Namespace", namespace: "Namespace", namespaces: "Namespace",
   no: "Node", node: "Node", nodes: "Node",
+  limits: "LimitRange", limitrange: "LimitRange", limitranges: "LimitRange",
+  quota: "ResourceQuota", resourcequota: "ResourceQuota", resourcequotas: "ResourceQuota",
+  ev: "Event", event: "Event", events: "Event",
 };
 
 const PLURAL: Record<ResourceType, string> = {
   Pod: "pods", ReplicaSet: "replicasets", Deployment: "deployments", Namespace: "namespaces", Node: "nodes",
   Service: "services", Endpoints: "endpoints", ConfigMap: "configmaps", Secret: "secrets",
+  LimitRange: "limitranges", ResourceQuota: "resourcequotas", Event: "events",
 };
 
 const GROUP: Record<ResourceType, string> = {
   Pod: "pod", ReplicaSet: "replicaset.apps", Deployment: "deployment.apps", Namespace: "namespace", Node: "node",
   Service: "service", Endpoints: "endpoints", ConfigMap: "configmap", Secret: "secret",
+  LimitRange: "limitrange", ResourceQuota: "resourcequota", Event: "event",
 };
+
+/** `deployments.apps`, `pods`: the resource name the API uses in errors. */
+const apiName = (type: ResourceType) => (GROUP[type].endsWith(".apps") ? `${PLURAL[type]}.apps` : PLURAL[type]);
+
+/** The namespace a command acts in: "" for cluster-scoped kinds, which ignore -n. */
+const nsOf = (type: ResourceType, p: Parsed) => (CLUSTER_SCOPED.has(type) ? "" : p.namespace);
 
 const NAME_RE = /^[a-z0-9]([-a-z0-9.]*[a-z0-9])?$/;
 const IMAGE_RE = /^[a-z0-9./:_-]+$/;
@@ -90,13 +121,17 @@ export const HELP = `This is a simulated kubectl. No real cluster or shell is in
 Supported commands:
   kubectl get <type> [name]
       types: pods, replicasets, deployments, services (svc), endpoints (ep),
-             configmaps (cm), secrets, namespaces, nodes
-  kubectl describe <pod|replicaset|deployment|service|configmap|secret> <name>
+             configmaps (cm), secrets, namespaces, nodes (no),
+             limitranges (limits), resourcequotas (quota), events (ev)
+  kubectl get events [--field-selector involvedObject.name=<name>]
+  kubectl describe <pod|replicaset|deployment|service|configmap|secret|node|
+                    limitrange|resourcequota> <name>
   kubectl create deployment <name> --image=<image> [--replicas=<n>]
   kubectl create namespace <name>
   kubectl create service <clusterip|nodeport|loadbalancer> <name> --tcp=<port>:<targetPort>
   kubectl create configmap <name> --from-literal=<key>=<value> ...
   kubectl create secret generic <name> --from-literal=<key>=<value> ...
+  kubectl create quota <name> --hard=pods=3,requests.cpu=1,limits.memory=2Gi
   kubectl run <name> --image=<image>
   kubectl expose <deployment|replicaset|pod> <name> --port=<p> [--target-port=<p>]
                  [--type=ClusterIP|NodePort|LoadBalancer] [--name=<service>]
@@ -111,8 +146,17 @@ Supported commands:
   kubectl rollout pause deployment/<name>
   kubectl rollout resume deployment/<name>
   kubectl apply -f <file>
-  kubectl delete <pod|deployment|service|configmap|secret|namespace> <name>
+  kubectl delete <pod|deployment|service|configmap|secret|namespace|node|
+                  limitrange|resourcequota> <name>
   kubectl delete -f <file>
+  kubectl taint nodes <node> <key>=<value>:<effect> | <key>:<effect> | <key>:<effect>- | <key>-
+      effects: NoSchedule, PreferNoSchedule, NoExecute
+  kubectl cordon <node>
+  kubectl uncordon <node>
+  kubectl drain <node> [--ignore-daemonsets] [--force] [--delete-emptydir-data]
+  kubectl top nodes|pods [name]
+  kubectl logs <pod|deployment/<name>|replicaset/<name>> [-c <container>]
+               [--previous] [--tail=<n>]
   ls                       list files
   cat <file>               print a file
   <kubectl command> > <file>
@@ -123,7 +167,7 @@ Quote values that contain spaces or brackets with '...' or "...".
 
 Supported flags:
   -n, --namespace <ns>     use a namespace other than "default"
-  -A, --all-namespaces     list across all namespaces (get only)
+  -A, --all-namespaces     list across all namespaces (get, top pods)
   -l, --selector <query>   filter by labels (get only): k=v, k!=v, k, !k,
                            'k in (a,b)', 'k notin (a,b)'; commas mean AND
   --show-labels            add a LABELS column (get only)
@@ -137,40 +181,22 @@ Supported flags:
   --name <name>            Service name (expose)
   --tcp <port>:<target>    Service port (create service)
   --from-literal <k>=<v>   a key and value (create configmap, create secret generic)
-  --overwrite              allow changing an existing value (label, annotate)
+  --overwrite              allow changing an existing value (label, annotate, taint)
   --revision <n>           show one revision (rollout history)
   --to-revision <n>        revision to go back to (rollout undo)
   --dry-run=client         print what would be created without changing anything
-                           (create, run, expose, apply)`;
+                           (create, run, expose, apply)
+  --hard <key>=<value>,... quota limits (create quota)
+  --field-selector <k>=<v> filter events by involvedObject.name, involvedObject.kind,
+                           type or reason; also != (get events)
+  -c, --container <name>   container to show logs of (logs)
+  -p, --previous           logs of the previous, crashed container (logs)
+  --tail <n>               only the last n log lines (logs)
+  --ignore-daemonsets      leave DaemonSet Pods in place (drain)
+  --force                  also delete Pods without a controller (drain)
+  --delete-emptydir-data   also delete Pods with emptyDir data (drain)
 
-type Requirement = { key: string; op: "=" | "!=" | "exists" | "!exists" | "in" | "notin"; values: string[] };
-
-type Parsed = {
-  verb: string;
-  args: string[];
-  namespace: string;
-  allNamespaces: boolean;
-  selector?: Requirement[];
-  showLabels: boolean;
-  output?: "yaml" | "wide";
-  replicas?: number;
-  image?: string;
-  filename?: string;
-  dryRun: boolean;
-  port?: number;
-  targetPort?: PortRef;
-  type?: ServiceType;
-  name?: string;
-  tcp: string[];
-  literals: string[];
-  overwrite: boolean;
-  revision?: number;
-  toRevision?: number;
-};
-
-function fail(message: string): never {
-  throw new CommandError(message);
-}
+Cluster-scoped types (nodes, namespaces) ignore -n.`;
 
 const checkKey = (key: string) => LABEL_KEY_RE.test(key) || fail(`error: invalid label key "${key}"`);
 const checkValue = (value: string) => LABEL_VALUE_RE.test(value) || fail(`error: invalid label value "${value}"`);
@@ -194,18 +220,6 @@ function parseSelector(value: string): Requirement[] {
   });
 }
 
-function selects(labels: Labels, reqs: Requirement[]): boolean {
-  return reqs.every(({ key, op, values }) => {
-    const has = Object.hasOwn(labels, key);
-    if (op === "=") return has && labels[key] === values[0];
-    if (op === "!=") return !has || labels[key] !== values[0];
-    if (op === "exists") return has;
-    if (op === "!exists") return !has;
-    if (op === "in") return has && values.includes(labels[key]);
-    return !has || !values.includes(labels[key]);
-  });
-}
-
 function parsePort(value: string, flag: string): number {
   const n = /^\d+$/.test(value) ? Number(value) : 0;
   if (n < 1 || n > 65535) fail(`error: invalid ${flag} value "${value}", must be a port number from 1 to 65535`);
@@ -225,6 +239,10 @@ function parse(tokens: string[]): Parsed {
     tcp: [],
     literals: [],
     overwrite: false,
+    previous: false,
+    force: false,
+    ignoreDaemonsets: false,
+    deleteEmptydirData: false,
   };
 
   for (let i = 2; i < tokens.length; i++) {
@@ -317,6 +335,33 @@ function parse(tokens: string[]): Parsed {
       case "--to-revision":
         p.toRevision = takeCount();
         break;
+      case "-c":
+      case "--container":
+        p.container = takeValue();
+        if (!NAME_RE.test(p.container)) fail(`error: invalid container name "${p.container}"`);
+        break;
+      case "-p":
+      case "--previous":
+        p.previous = true;
+        break;
+      case "--tail":
+        p.tail = takeCount();
+        break;
+      case "--field-selector":
+        p.fieldSelector = takeValue();
+        break;
+      case "--hard":
+        p.hard = takeValue();
+        break;
+      case "--force":
+        p.force = true;
+        break;
+      case "--ignore-daemonsets":
+        p.ignoreDaemonsets = true;
+        break;
+      case "--delete-emptydir-data":
+        p.deleteEmptydirData = true;
+        break;
       default:
         fail(`error: unknown flag: ${flag}\nType "kubectl help" for supported flags.`);
     }
@@ -339,34 +384,17 @@ function target(p: Parsed): { type: ResourceType; name?: string } {
   return { type, name };
 }
 
-function age(c: Cluster, createdAt: number): string {
-  const s = c.clock - createdAt;
-  if (s < 120) return `${s}s`;
-  if (s < 7200) return `${Math.floor(s / 60)}m`;
-  return `${Math.floor(s / 3600)}h`;
-}
-
-function table(rows: string[][]): string {
-  const widths = rows[0].map((_, i) => Math.max(...rows.map((r) => r[i].length)));
-  return rows.map((r) => r.map((cell, i) => cell.padEnd(widths[i])).join("   ").trimEnd()).join("\n");
-}
-
-const labelText = (labels: Labels) =>
-  Object.entries(labels).map(([k, v]) => `${k}=${v}`).join(",") || "<none>";
-
-const annotationText = (annotations: Labels) =>
-  Object.entries(annotations).map(([k, v]) => `${k}: ${v}`).join("\n                ") || "<none>";
-
 function notFound(type: ResourceType, name: string): never {
   fail(`Error from server (NotFound): ${PLURAL[type]} "${name}" not found`);
 }
 
 function requireNamespace(c: Cluster, ns: string) {
-  if (!c.namespaces.includes(ns)) fail(`Error from server (NotFound): namespaces "${ns}" not found`);
+  if (ns && !c.namespaces.includes(ns)) fail(`Error from server (NotFound): namespaces "${ns}" not found`);
 }
 
 // A crash-looping Pod was started at least once, so Kubernetes keeps its phase at Running.
-const phase = (p: Pod) => (p.status === "Running" || p.status === "CrashLoopBackOff" ? "Running" : "Pending");
+const PHASES: Partial<Record<Pod["status"], string>> = { Running: "Running", CrashLoopBackOff: "Running", OOMKilled: "Running", Completed: "Succeeded", Error: "Failed" };
+const phase = (p: Pod) => PHASES[p.status] ?? "Pending";
 
 function deploymentStatus(c: Cluster, d: Deployment) {
   const pods = replicaSetsOf(c, d).flatMap((rs) => podsOf(c, rs));
@@ -385,13 +413,16 @@ function endpointsText(c: Cluster, s: Service, limit = 3): string {
 
 const containerYaml = (image: string, { name, ...rest }: Container) => [{ name, image, ...rest }];
 
+/** Pods get an IP once their sandbox exists, after ContainerCreating. */
+const hasIP = (p: Pod) => !!p.node && p.status !== "ContainerCreating" && p.status !== "Pending";
+
 const nonEmpty = (o: Labels) => (Object.keys(o).length ? o : undefined);
 
 /** `live: false` leaves out what only the server sets (status, owners, node, IPs), as a dry run prints. */
 function manifest(c: Cluster, r: Resource, live = true) {
   const metadata: Record<string, unknown> = {
     name: r.metadata.name,
-    namespace: r.metadata.namespace,
+    namespace: r.metadata.namespace || undefined,
     labels: r.metadata.labels,
     annotations: nonEmpty(r.metadata.annotations),
   };
@@ -404,17 +435,24 @@ function manifest(c: Cluster, r: Resource, live = true) {
       apiVersion: "v1",
       kind: "Pod",
       metadata,
-      spec: live ? { nodeName: r.node, containers } : { containers },
+      spec: { ...r.spec, ...(live && r.node && { nodeName: r.node }), containers },
       ...(live && {
         status: {
           phase: phase(r),
-          podIP: r.status === "ContainerCreating" ? undefined : podIP(r),
+          podIP: hasIP(r) ? podIP(r) : undefined,
           reason: r.status === "Running" ? undefined : r.status,
           ready: isReady(r),
           restartCount: r.restarts,
+          qosClass: qosClass(r.container),
         },
       }),
     };
+  }
+  if (r.kind === "Node") return nodeManifest(r, live);
+  if (r.kind === "LimitRange") return { apiVersion: "v1", kind: "LimitRange", metadata, spec: { limits: r.limits } };
+  if (r.kind === "ResourceQuota") {
+    const used = Object.fromEntries(Object.keys(r.hard).sort().map((k) => [k, formatHard(k, quotaUsed(c, r, k))]));
+    return { apiVersion: "v1", kind: "ResourceQuota", metadata, spec: { hard: r.hard }, ...(live && { status: { hard: r.hard, used } }) };
   }
   if (r.kind === "Service") {
     return {
@@ -437,7 +475,7 @@ function manifest(c: Cluster, r: Resource, live = true) {
     selector: { matchLabels: r.selector },
     template: {
       metadata: { labels: r.template.labels, annotations: r.template.annotations },
-      spec: { containers: containerYaml(r.template.image, r.template.container) },
+      spec: { ...r.template.spec, containers: containerYaml(r.template.image, r.template.container) },
     },
   };
   if (r.kind === "ReplicaSet") {
@@ -480,29 +518,31 @@ function templateColumns(t: PodTemplate, selector: Labels) {
 
 function get(c: Cluster, p: Parsed): string {
   const { type, name } = target(p);
-  const nsLabel = p.allNamespaces ? "" : ` in ${p.namespace} namespace`;
+  if (type === "Event") {
+    if (name || p.selector || p.output || p.showLabels) fail("error: get events supports only -n, -A and --field-selector in this simulator");
+    return getEvents(c, p);
+  }
+  if (p.fieldSelector) fail("error: --field-selector is only supported with kubectl get events in this simulator");
+  const clusterScoped = CLUSTER_SCOPED.has(type);
+  const allNamespaces = p.allNamespaces && !clusterScoped;
+  const nsLabel = allNamespaces || clusterScoped ? "" : ` in ${p.namespace} namespace`;
 
-  if (type === "Namespace" || type === "Node") {
+  if (type === "Namespace") {
     if (p.showLabels || p.output === "wide") fail(`error: --show-labels and -o wide are not supported for ${PLURAL[type]} in this simulator`);
-    const names = type === "Namespace" ? c.namespaces : c.nodes;
-    const picked = name ? names.filter((n) => n === name) : names;
+    const picked = name ? c.namespaces.filter((n) => n === name) : c.namespaces;
     if (name && !picked.length) notFound(type, name);
     if (p.output) {
       const items = picked.map((n) => ({ apiVersion: "v1", kind: type, metadata: { name: n } }));
       return stringify(name ? items[0] : { apiVersion: "v1", kind: "List", items }).trimEnd();
     }
-    if (type === "Namespace") return table([["NAME", "STATUS", "AGE"], ...picked.map((n) => [n, "Active", age(c, -600)])]);
-    return table([
-      ["NAME", "STATUS", "ROLES", "AGE", "VERSION"],
-      ...picked.map((n) => [n, "Ready", n === "control-plane" ? "control-plane" : "<none>", age(c, -600), "v1.33.0"]),
-    ]);
+    return table([["NAME", "STATUS", "AGE"], ...picked.map((n) => [n, "Active", age(c, -600)])]);
   }
 
-  if (!p.allNamespaces && !name && !c.namespaces.includes(p.namespace)) return `No resources found${nsLabel}.`;
+  if (!allNamespaces && !clusterScoped && !name && !c.namespaces.includes(p.namespace)) return `No resources found${nsLabel}.`;
   // Endpoints are computed from Services, never stored.
-  let items: Resource[] = list(c, type === "Endpoints" ? "Service" : type, p.allNamespaces ? undefined : p.namespace);
+  let items: Resource[] = list(c, type === "Endpoints" ? "Service" : type, allNamespaces ? undefined : nsOf(type, p));
   if (name) {
-    if (p.allNamespaces) fail("error: a resource cannot be retrieved by name across all namespaces");
+    if (allNamespaces) fail("error: a resource cannot be retrieved by name across all namespaces");
     items = items.filter((r) => r.metadata.name === name);
     if (!items.length) notFound(type, name);
   }
@@ -521,7 +561,7 @@ function get(c: Cluster, p: Parsed): string {
     switch (r.kind) {
       case "Pod": {
         const row = [r.metadata.name, `${isReady(r) ? 1 : 0}/1`, r.status, String(r.restarts), created];
-        return wide ? [...row, r.status === "ContainerCreating" ? "<none>" : podIP(r), r.node] : row;
+        return wide ? [...row, hasIP(r) ? podIP(r) : "<none>", r.node || "<none>"] : row;
       }
       case "ReplicaSet": {
         const pods = podsOf(c, r);
@@ -542,6 +582,15 @@ function get(c: Cluster, p: Parsed): string {
         return [r.metadata.name, String(Object.keys(r.data).length), created];
       case "Secret":
         return [r.metadata.name, r.type, String(Object.keys(r.data).length), created];
+      case "Node":
+        return nodeRow(c, r, wide);
+      case "LimitRange":
+        return [r.metadata.name, timestamp(r.metadata.createdAt)];
+      case "ResourceQuota": {
+        const keys = Object.keys(r.hard).sort();
+        const usage = (ks: string[]) => ks.map((k) => `${k}: ${formatHard(k, quotaUsed(c, r, k))}/${r.hard[k]}`).join(", ");
+        return [r.metadata.name, created, usage(keys.filter((k) => !k.startsWith("limits."))), usage(keys.filter((k) => k.startsWith("limits.")))];
+      }
     }
   });
   const header = {
@@ -552,10 +601,13 @@ function get(c: Cluster, p: Parsed): string {
     Endpoints: ["NAME", "ENDPOINTS", "AGE"],
     ConfigMap: ["NAME", "DATA", "AGE"],
     Secret: ["NAME", "TYPE", "DATA", "AGE"],
+    Node: [...NODE_HEADER, ...(wide ? NODE_WIDE_HEADER : [])],
+    LimitRange: ["NAME", "CREATED AT"],
+    ResourceQuota: ["NAME", "AGE", "REQUEST", "LIMIT"],
   }[type];
   const all = [header, ...rows];
   if (p.showLabels) all.forEach((row, i) => row.push(i ? labelText(items[i - 1].metadata.labels) : "LABELS"));
-  if (p.allNamespaces) all.forEach((row, i) => row.unshift(i ? items[i - 1].metadata.namespace : "NAMESPACE"));
+  if (allNamespaces) all.forEach((row, i) => row.unshift(i ? items[i - 1].metadata.namespace : "NAMESPACE"));
   return table(all);
 }
 
@@ -590,46 +642,83 @@ function envLines(ctr: Container): string[] {
   ];
 }
 
-/** Events the kubelet would have recorded for the Pod's current state. */
-function podEvents(c: Cluster, p: Pod): string[][] {
-  const events: string[][] = [];
-  const name = p.container.name;
-  if (p.status === "ImagePullBackOff") {
-    events.push(["Warning", "Failed", pullError(p.image)!], ["Normal", "BackOff", `Back-off pulling image "${p.image}"`]);
-  }
-  if (p.status === "CreateContainerConfigError") events.push(["Warning", "Failed", `Error: ${configError(c, p)}`]);
-  if (p.status === "Running" || p.status === "CrashLoopBackOff") {
-    const failures: [string, Probe | undefined][] = [
-      ["Startup", p.container.startupProbe],
-      ["Liveness", p.container.livenessProbe],
-      ["Readiness", p.container.readinessProbe],
-    ];
-    for (const [kind, probe] of failures) {
-      const why = probeFailure(p, probe);
-      if (!why) continue;
-      events.push(["Warning", "Unhealthy", `${kind} probe failed: ${why}`]);
-      if (kind !== "Readiness") events.push(["Normal", "Killing", `Container ${name} failed ${kind.toLowerCase()} probe, will be restarted`]);
-    }
-    if (p.status === "CrashLoopBackOff" && crashes(p)) {
-      events.push(["Warning", "BackOff", `Back-off restarting failed container ${name} in pod ${p.metadata.name}`]);
-    }
-  }
-  if (!events.length) return [];
-  const when = age(c, p.metadata.createdAt);
-  return [["Type", "Reason", "Age", "From", "Message"], ["----", "------", "----", "----", "-------"], ...events.map(([t, r, m]) => [t, r, when, "kubelet", m])];
+const resourceLines = (ctr: Container): string[] =>
+  (["limits", "requests"] as const).flatMap((field) => {
+    const values = Object.entries(ctr.resources?.[field] ?? {});
+    if (!values.length) return [];
+    return [`${field[0].toUpperCase()}${field.slice(1)}:`, ...values.map(([k, v]) => `  ${`${k}:`.padEnd(8)} ${v}`)];
+  });
+
+const TERMINATED: Pod["status"][] = ["OOMKilled", "Completed", "Error"];
+
+function podState(p: Pod): string | undefined {
+  if (p.status === "Pending") return undefined;
+  if (p.status === "Running") return "Running";
+  return `${TERMINATED.includes(p.status) ? "Terminated" : "Waiting"} (reason: ${p.status})`;
 }
 
-const pad = (pairs: [string, string | undefined][]) =>
-  pairs.filter(([, v]) => v !== undefined).map(([k, v]) => `${(k + ":").padEnd(Math.max(16, k.length + 3))}${v}`.trimEnd()).join("\n");
+const tolerationText = (t: NonNullable<PodSpec["tolerations"]>[number]) =>
+  `${t.key ?? ""}${t.operator === "Exists" ? "" : `=${t.value ?? ""}`}:${t.effect ?? ""}${t.operator === "Exists" ? " op=Exists" : ""}${t.tolerationSeconds !== undefined ? ` for ${t.tolerationSeconds}s` : ""}`;
+
+function describePod(c: Cluster, r: Pod): string {
+  const ctr = r.container;
+  const last = lastTermination(r);
+  const multi = (items: string[]) => items.join("\n                ") || "<none>";
+  return [
+    pad([
+      ["Name", r.metadata.name],
+      ["Namespace", r.metadata.namespace],
+      ["Node", r.node || "<none>"],
+      ["Labels", labelText(r.metadata.labels)],
+      ["Annotations", annotationText(r.metadata.annotations)],
+      ["Status", phase(r)],
+      ["IP", hasIP(r) ? podIP(r) : "<none>"],
+      ["Controlled By", r.owner ? `${r.ownerKind ?? "ReplicaSet"}/${r.owner}` : "<none>"],
+      ["Container", ctr.name],
+      ["Image", r.image],
+      ["Port", ctr.ports?.map((x) => `${x.containerPort}/${x.protocol ?? "TCP"}`).join(", ")],
+      ["State", podState(r)],
+      ...(last ? ([["Last State", "Terminated"], ["  Reason", last.reason], ["  Exit Code", String(last.exitCode)]] as [string, string][]) : []),
+      ["Ready", isReady(r) ? "True" : "False"],
+      ["Restart Count", String(r.restarts)],
+    ]),
+    ...resourceLines(ctr),
+    pad([
+      ["Liveness", probeText(ctr.livenessProbe)],
+      ["Readiness", probeText(ctr.readinessProbe)],
+      ["Startup", probeText(ctr.startupProbe)],
+    ]),
+    ...envLines(ctr),
+    pad([
+      ["QoS Class", qosClass(ctr)],
+      ["Node-Selectors", labelText(r.spec?.nodeSelector ?? {})],
+      ["Tolerations", multi((r.spec?.tolerations ?? []).map(tolerationText))],
+    ]),
+  ]
+    .filter(Boolean)
+    .join("\n");
+}
+
+function describeQuota(c: Cluster, q: ResourceQuota): string {
+  const rows = Object.keys(q.hard).sort().map((k) => [k, formatHard(k, quotaUsed(c, q, k)), q.hard[k]]);
+  return `${pad([["Name", q.metadata.name], ["Namespace", q.metadata.namespace]])}\n${table([["Resource", "Used", "Hard"], ["--------", "----", "----"], ...rows])}`;
+}
 
 function describe(c: Cluster, p: Parsed): string {
   const { type, name } = target(p);
   if (!name) fail(`error: specify the ${type.toLowerCase()} name to describe`);
-  if (type === "Namespace" || type === "Node" || type === "Endpoints") {
+  if (type === "Namespace" || type === "Endpoints" || type === "Event") {
     fail(`error: describe ${PLURAL[type]} is not supported in this simulator`);
   }
-  requireNamespace(c, p.namespace);
-  const r = find(c, type, p.namespace, name) ?? notFound(type, name);
+  const ns = nsOf(type, p);
+  requireNamespace(c, ns);
+  const r = find(c, type, ns, name) ?? notFound(type, name);
+  if (r.kind === "Node") return describeNode(c, r);
+  const events = [...eventsOf(c, r), ...(r.kind === "Pod" ? kubeletEvents(c, r) : [])];
+  return `${describeBody(c, r)}\n${eventsSection(c, events)}`;
+}
+
+function describeBody(c: Cluster, r: Exclude<Resource, Node>): string {
   const head: [string, string][] = [
     ["Name", r.metadata.name],
     ["Namespace", r.metadata.namespace],
@@ -637,44 +726,31 @@ function describe(c: Cluster, p: Parsed): string {
     ["Annotations", annotationText(r.metadata.annotations)],
   ];
 
-  if (r.kind === "Pod") {
-    const ctr = r.container;
-    const events = podEvents(c, r);
-    return [
-      pad([
-        ["Name", r.metadata.name],
-        ["Namespace", r.metadata.namespace],
-        ["Node", r.node],
-        ["Labels", labelText(r.metadata.labels)],
-        ["Annotations", annotationText(r.metadata.annotations)],
-        ["Status", phase(r)],
-        ["IP", r.status === "ContainerCreating" ? "<none>" : podIP(r)],
-        ["Controlled By", r.owner ? `ReplicaSet/${r.owner}` : "<none>"],
-        ["Container", ctr.name],
-        ["Image", r.image],
-        ["Port", ctr.ports?.map((x) => `${x.containerPort}/${x.protocol ?? "TCP"}`).join(", ")],
-        ["State", r.status === "Running" ? "Running" : `Waiting (reason: ${r.status})`],
-        ["Ready", isReady(r) ? "True" : "False"],
-        ["Restart Count", String(r.restarts)],
-        ["Liveness", probeText(ctr.livenessProbe)],
-        ["Readiness", probeText(ctr.readinessProbe)],
-        ["Startup", probeText(ctr.startupProbe)],
-      ]),
-      ...envLines(ctr),
-      events.length ? `Events:\n${table(events).replace(/^/gm, "  ")}` : "Events:         <none>",
-    ].join("\n");
+  if (r.kind === "Pod") return describePod(c, r);
+  if (r.kind === "ResourceQuota") return describeQuota(c, r);
+  if (r.kind === "LimitRange") {
+    const rows = r.limits.flatMap((item) =>
+      (["cpu", "memory"] as const)
+        .filter((res) => [item.min, item.max, item.defaultRequest, item.default].some((l) => l?.[res] !== undefined))
+        .map((res) => [item.type, res, item.min?.[res] ?? "-", item.max?.[res] ?? "-", item.defaultRequest?.[res] ?? "-", item.default?.[res] ?? "-", "-"]),
+    );
+    const header = ["Type", "Resource", "Min", "Max", "Default Request", "Default Limit", "Max Limit/Request Ratio"];
+    return `${pad([["Name", r.metadata.name], ["Namespace", r.metadata.namespace]])}\n${table([header, header.map((h) => "-".repeat(h.length)), ...rows])}`;
   }
   if (r.kind === "ReplicaSet") {
     const pods = podsOf(c, r);
     const ready = pods.filter(isReady).length;
-    return pad([
-      ...head,
-      ["Selector", labelText(r.selector)],
-      ["Controlled By", r.owner ? `Deployment/${r.owner}` : "<none>"],
-      ["Replicas", `${pods.length} current / ${r.replicas} desired`],
-      ["Pods Status", `${ready} Running / ${pods.length - ready} Waiting`],
-      ["Image", r.template.image],
-    ]);
+    return [
+      pad([
+        ...head,
+        ["Selector", labelText(r.selector)],
+        ["Controlled By", r.owner ? `Deployment/${r.owner}` : "<none>"],
+        ["Replicas", `${pods.length} current / ${r.replicas} desired`],
+        ["Pods Status", `${ready} Running / ${pods.length - ready} Waiting`],
+        ["Image", r.template.image],
+      ]),
+      ...resourceLines(r.template.container),
+    ].join("\n");
   }
   if (r.kind === "Service") {
     const eps = endpointsText(c, r, Infinity);
@@ -705,7 +781,7 @@ function describe(c: Cluster, p: Parsed): string {
   const rsText = (rs: ReplicaSet) => `${rs.metadata.name} (${podsOf(c, rs).length}/${rs.replicas} replicas created)`;
   const olds = replicaSetsOf(c, r).filter((rs) => rs !== current && (rs.replicas > 0 || podsOf(c, rs).length));
   const { type: strategy, maxSurge, maxUnavailable } = r.strategy;
-  return pad([
+  return [pad([
     ...head,
     ["Selector", labelText(r.selector)],
     ["Replicas", `${r.replicas} desired | ${s.updated} updated | ${s.total} total | ${s.ready} available | ${s.total - s.ready} unavailable`],
@@ -715,7 +791,7 @@ function describe(c: Cluster, p: Parsed): string {
     ["Image", r.template.image],
     ["OldReplicaSets", olds.map(rsText).join(", ") || "<none>"],
     ["NewReplicaSet", current ? rsText(current) : "<none>"],
-  ]);
+  ]), ...resourceLines(r.template.container)].join("\n");
 }
 
 function scale(c: Cluster, p: Parsed): string {
@@ -732,7 +808,7 @@ function scale(c: Cluster, p: Parsed): string {
 function deleteResource(c: Cluster, type: Kind, namespace: string, name: string): string {
   requireNamespace(c, namespace);
   const r = find(c, type, namespace, name) ?? notFound(type, name);
-  c.resources = c.resources.filter((x) => x !== r);
+  removeResource(c, r);
   return `${GROUP[type]} "${name}" deleted`;
 }
 
@@ -749,11 +825,11 @@ function deleteNamespace(c: Cluster, name: string): string {
 function remove(c: Cluster, p: Parsed): string {
   if (p.filename) return deleteFromFile(c, p);
   const { type, name } = target(p);
-  if (type === "ReplicaSet" || type === "Node" || type === "Endpoints") {
-    fail(`error: delete ${PLURAL[type]} is not supported in this simulator, only pods, deployments, services, configmaps, secrets and namespaces`);
+  if (type === "ReplicaSet" || type === "Endpoints" || type === "Event") {
+    fail(`error: delete ${PLURAL[type]} is not supported in this simulator, only pods, deployments, services, configmaps, secrets, namespaces, nodes, limitranges and resourcequotas`);
   }
   if (!name) fail("error: specify the name of the resource to delete");
-  return type === "Namespace" ? deleteNamespace(c, name) : deleteResource(c, type, p.namespace, name);
+  return type === "Namespace" ? deleteNamespace(c, name) : deleteResource(c, type, nsOf(type, p), name);
 }
 
 const requireImage = (p: Parsed) => p.image ?? fail("error: required flag --image not set, e.g. --image=nginx:1.27");
@@ -764,10 +840,11 @@ function createResource(c: Cluster, p: Parsed, r: Resource, done = "created"): s
   if (p.dryRun) return p.output ? stringify(manifest(c, r, false)).trimEnd() : `${ref} ${done} (dry run)`;
   requireNamespace(c, r.metadata.namespace);
   if (find(c, r.kind, r.metadata.namespace, r.metadata.name)) {
-    const plural = GROUP[r.kind].endsWith(".apps") ? `${PLURAL[r.kind]}.apps` : PLURAL[r.kind];
-    fail(`Error from server (AlreadyExists): ${plural} "${r.metadata.name}" already exists`);
+    fail(`Error from server (AlreadyExists): ${apiName(r.kind)} "${r.metadata.name}" already exists`);
   }
-  c.resources.push(r);
+  const denied = admit(c, r);
+  if (denied) fail(`Error from server (Forbidden): ${apiName(r.kind)} "${r.metadata.name}" is forbidden: ${denied}`);
+  addResource(c, r);
   return `${ref} ${done}`;
 }
 
@@ -826,6 +903,19 @@ function createService(c: Cluster, p: Parsed, sub: string | undefined, name: str
   return createResource(c, p, newService(c, name, p.namespace, { app: name }, type, { app: name }, ports));
 }
 
+function parseHardFlag(value?: string): Record<string, string> {
+  if (!value) fail("error: required flag --hard not set, e.g. --hard=pods=3,requests.cpu=1");
+  const hard: Record<string, string> = {};
+  for (const part of value.split(",")) {
+    const eq = part.indexOf("=");
+    const [key, q] = [part.slice(0, eq), part.slice(eq + 1)];
+    if (eq < 1 || !QUOTA_KEYS.includes(key)) fail(`error: invalid --hard "${part}", use <key>=<value> with a key from ${QUOTA_KEYS.join(", ")}`);
+    if (parseHard(key, q) === null) fail(`error: invalid --hard "${part}": quantities must look like 3, 500m, 1 or 2Gi`);
+    hard[key] = q;
+  }
+  return hard;
+}
+
 function create(c: Cluster, p: Parsed): string {
   const [kind, sub, subName] = p.args;
   const nested = TYPES[kind?.toLowerCase() ?? ""];
@@ -837,10 +927,12 @@ function create(c: Cluster, p: Parsed): string {
     return createResource(c, p, secret);
   }
   const { type, name } = target(p);
-  if (type !== "Deployment" && type !== "Namespace" && type !== "ConfigMap") {
-    fail(`error: create ${PLURAL[type]} is not supported in this simulator, only deployments, namespaces, services, configmaps and secrets`);
+  if (type !== "Deployment" && type !== "Namespace" && type !== "ConfigMap" && type !== "ResourceQuota") {
+    fail(`error: create ${PLURAL[type]} is not supported in this simulator, only deployments, namespaces, services, configmaps, secrets and quotas`);
   }
   if (!name) fail(`error: specify the name of the ${type.toLowerCase()} to create`);
+  if (p.hard !== undefined && type !== "ResourceQuota") fail("error: --hard is only supported with kubectl create quota");
+  if (type === "ResourceQuota") return createResource(c, p, { kind: "ResourceQuota", metadata: meta(c, name, p.namespace, {}), hard: parseHardFlag(p.hard) });
   if (type === "ConfigMap") {
     return createResource(c, p, { kind: "ConfigMap", metadata: meta(c, name, p.namespace, {}), data: encodeLiterals(p, (v) => v) });
   }
@@ -914,12 +1006,13 @@ function setMetadata(c: Cluster, p: Parsed, field: "labels" | "annotations"): st
   const [first, ...rest] = p.args;
   const changes = first?.includes("/") ? rest : rest.slice(1);
   const { type, name } = target({ ...p, args: first?.includes("/") ? [first] : [first, rest[0]].filter(Boolean) });
-  if (type === "Namespace" || type === "Node" || type === "Endpoints") fail(`error: ${p.verb} ${PLURAL[type]} is not supported in this simulator`);
+  if (type === "Namespace" || type === "Endpoints" || type === "Event") fail(`error: ${p.verb} ${PLURAL[type]} is not supported in this simulator`);
   if (!name) fail(`error: specify the name of the resource to ${p.verb}`);
   const noun = field === "labels" ? "label" : "annotation";
   if (!changes.length) fail(`error: at least one ${noun} update is required, e.g. key=value or key-`);
-  requireNamespace(c, p.namespace);
-  const r = find(c, type, p.namespace, name) ?? notFound(type, name);
+  const ns = nsOf(type, p);
+  requireNamespace(c, ns);
+  const r = find(c, type, ns, name) ?? notFound(type, name);
   const values = r.metadata[field];
   for (const change of changes) {
     if (change.endsWith("-") && !change.includes("=")) {
@@ -941,8 +1034,6 @@ function setMetadata(c: Cluster, p: Parsed, field: "labels" | "annotations"): st
   return `${GROUP[type]}/${name} ${field === "labels" ? "labeled" : "annotated"}`;
 }
 
-/** A clock-derived RFC 3339 time, so restarts are deterministic. */
-const timestamp = (c: Cluster) => new Date(Date.UTC(2026, 0, 1) + c.clock * 1000).toISOString().replace(/\.\d+Z$/, "Z");
 
 const withoutHash = (labels: Labels) => Object.fromEntries(Object.entries(labels).filter(([k]) => k !== HASH_LABEL));
 
@@ -1020,7 +1111,7 @@ function rollout(c: Cluster, p: Parsed): string {
       return rolloutUndo(c, p, d);
     case "restart":
       if (d.paused) fail(`error: deployments.apps "${name}" can't restart paused deployment (run rollout resume first)`);
-      d.template.annotations = { ...d.template.annotations, [RESTARTED_AT]: timestamp(c) };
+      d.template.annotations = { ...d.template.annotations, [RESTARTED_AT]: timestamp(c.clock) };
       return `${ref} restarted`;
     default: {
       const pause = sub === "pause";
@@ -1052,7 +1143,8 @@ function readManifests(c: Cluster, p: Parsed): Manifest[] {
   return manifests;
 }
 
-type ManifestContainer = Extract<Manifest, { kind: "Pod" }>["spec"]["containers"][number];
+type ManifestPodSpec = Extract<Manifest, { kind: "Pod" }>["spec"];
+type ManifestContainer = ManifestPodSpec["containers"][number];
 
 function podSpecKey(spec: { containers: { name: string; image: string }[] }) {
   const [first, ...rest] = spec.containers;
@@ -1078,6 +1170,12 @@ function applied(r: Resource) {
       return { data: r.data };
     case "Secret":
       return { type: r.type, data: r.data };
+    case "Node":
+      return { taints: r.taints, unschedulable: r.unschedulable };
+    case "LimitRange":
+      return { limits: r.limits };
+    case "ResourceQuota":
+      return { hard: r.hard };
   }
 }
 
@@ -1085,9 +1183,27 @@ const compared = (r: Resource) => ({ labels: r.metadata.labels, annotations: use
 
 // shortcut: only the first container is modelled; further containers and resources are validated but ignored.
 function toContainer(m: ManifestContainer): Container {
-  const { name, ports, env, envFrom, readinessProbe, livenessProbe, startupProbe } = m;
-  return structuredClone({ name, ports, env, envFrom, readinessProbe, livenessProbe, startupProbe });
+  const { name, ports, env, envFrom, readinessProbe, livenessProbe, startupProbe, resources } = m;
+  return withDefaultRequests(structuredClone({ name, ports, env, envFrom, readinessProbe, livenessProbe, startupProbe, resources }));
 }
+
+/** The modelled pod-level fields, or undefined when none is set (keeps template hashes stable). */
+function toPodSpec(m: ManifestPodSpec): PodSpec | undefined {
+  const { nodeName, nodeSelector, tolerations, affinity } = m;
+  const spec = Object.fromEntries(Object.entries({ nodeName, nodeSelector, tolerations, affinity }).filter(([, v]) => v !== undefined));
+  return Object.keys(spec).length ? structuredClone(spec) : undefined;
+}
+
+function toNode(c: Cluster, m: Extract<Manifest, { kind: "Node" }>): Node {
+  const n = workerNode(c, m.metadata.name);
+  n.metadata = meta(c, m.metadata.name, "", { ...n.metadata.labels, ...m.metadata.labels }, m.metadata.annotations);
+  n.taints = structuredClone(m.spec?.taints ?? []);
+  n.unschedulable = m.spec?.unschedulable ?? false;
+  return n;
+}
+
+const namespaceOf = (m: Exclude<Manifest, { kind: "Namespace" }>, fallback: string) =>
+  m.kind === "Node" ? "" : (m.metadata.namespace ?? fallback);
 
 function toResource(c: Cluster, m: Exclude<Manifest, { kind: "Namespace" }>, namespace: string): Resource {
   const labels = m.metadata.labels ?? {};
@@ -1095,10 +1211,17 @@ function toResource(c: Cluster, m: Exclude<Manifest, { kind: "Namespace" }>, nam
   switch (m.kind) {
     case "Pod": {
       const [first] = m.spec.containers;
-      const pod = newPod(c, m.metadata.name, namespace, { labels, annotations, image: first.image, container: toContainer(first) });
+      const spec = toPodSpec(m.spec);
+      const pod = newPod(c, m.metadata.name, namespace, { labels, annotations, image: first.image, container: toContainer(first), ...(spec && { spec }) });
       pod.specKey = podSpecKey(m.spec);
       return pod;
     }
+    case "Node":
+      return toNode(c, m);
+    case "LimitRange":
+      return { kind: "LimitRange", metadata: meta(c, m.metadata.name, namespace, labels, annotations), limits: m.spec.limits.map((l) => defaultLimitRangeItem(structuredClone(l))) };
+    case "ResourceQuota":
+      return { kind: "ResourceQuota", metadata: meta(c, m.metadata.name, namespace, labels, annotations), hard: { ...m.spec.hard } };
     case "Service": {
       const ports = m.spec.ports.map((x) => ({ ...x, protocol: x.protocol ?? "TCP", targetPort: x.targetPort ?? x.port }));
       const s: Service = { kind: "Service", metadata: meta(c, m.metadata.name, namespace, labels, annotations), type: m.spec.type ?? "ClusterIP", clusterIP: m.spec.clusterIP ?? "", selector: { ...m.spec.selector }, ports };
@@ -1120,6 +1243,8 @@ function toResource(c: Cluster, m: Exclude<Manifest, { kind: "Namespace" }>, nam
     image: t.spec.containers[0].image,
     container: toContainer(t.spec.containers[0]),
   };
+  const podSpec = toPodSpec(t.spec);
+  if (podSpec) template.spec = podSpec;
   const base = { metadata: meta(c, m.metadata.name, namespace, labels, annotations), replicas: m.spec.replicas, selector: { ...m.spec.selector.matchLabels }, template };
   if (m.kind === "ReplicaSet") return { kind: "ReplicaSet", ...base };
   const s = m.spec.strategy;
@@ -1160,14 +1285,18 @@ function apply(c: Cluster, p: Parsed): string {
       if (!exists) draft.namespaces.push(name);
       return { ref: `namespace/${name}`, result: exists ? "unchanged" : "created", yaml: { apiVersion: "v1", kind: "Namespace", metadata: { name } } };
     }
-    const r = toResource(draft, m, m.metadata.namespace ?? p.namespace);
+    const r = toResource(draft, m, namespaceOf(m, p.namespace));
     const { name, namespace } = r.metadata;
     requireNamespace(draft, namespace);
     const existing = find(draft, r.kind, namespace, name);
     if (r.kind === "Service") assignServiceFields(draft, r, existing as Service | undefined);
+    // Node labels set by the kubelet stay, like a three-way merge would keep them.
+    if (r.kind === "Node" && existing) r.metadata.labels = { ...existing.metadata.labels, ...m.metadata.labels };
     let result = "created";
     if (!existing) {
-      draft.resources.push(r);
+      const denied = p.dryRun ? null : admit(draft, r);
+      if (denied) fail(`Error from server (Forbidden): error when creating "${p.filename}": ${apiName(r.kind)} "${name}" is forbidden: ${denied}`);
+      addResource(draft, r);
     } else if (canonical(compared(existing)) === canonical(compared(r))) {
       result = "unchanged";
     } else {
@@ -1200,7 +1329,7 @@ function deleteFromFile(c: Cluster, p: Parsed): string {
       lines.push(
         m.kind === "Namespace"
           ? deleteNamespace(c, m.metadata.name)
-          : deleteResource(c, m.kind, m.metadata.namespace ?? p.namespace, m.metadata.name),
+          : deleteResource(c, m.kind, namespaceOf(m, p.namespace), m.metadata.name),
       );
     } catch (e) {
       if (!(e instanceof CommandError)) throw e;
@@ -1214,7 +1343,7 @@ function deleteFromFile(c: Cluster, p: Parsed): string {
 
 function execute(c: Cluster, p: Parsed): string {
   const only = (allowed: boolean, message: string) => allowed || fail(`error: ${message}`);
-  if (p.allNamespaces) only(p.verb === "get", "-A is only supported with kubectl get");
+  if (p.allNamespaces) only(p.verb === "get" || p.verb === "top", "-A is only supported with kubectl get and top");
   if (p.selector) only(p.verb === "get", "-l is only supported with kubectl get");
   if (p.showLabels) only(p.verb === "get", "--show-labels is only supported with kubectl get");
   if (p.dryRun) only(["create", "run", "expose", "apply"].includes(p.verb), "--dry-run=client is only supported with kubectl create, run, expose and apply");
@@ -1226,7 +1355,10 @@ function execute(c: Cluster, p: Parsed): string {
   if (p.port || p.targetPort || p.type || p.name) only(p.verb === "expose", "--port, --target-port, --type and --name are only supported with kubectl expose");
   if (p.tcp.length) only(p.verb === "create", "--tcp is only supported with kubectl create service");
   if (p.literals.length) only(p.verb === "create", "--from-literal is only supported with kubectl create configmap and create secret generic");
-  if (p.overwrite) only(p.verb === "label" || p.verb === "annotate", "--overwrite is only supported with kubectl label and annotate");
+  if (p.overwrite) only(["label", "annotate", "taint"].includes(p.verb), "--overwrite is only supported with kubectl label, annotate and taint");
+  if (p.container !== undefined || p.previous || p.tail !== undefined) only(p.verb === "logs", "-c, --previous and --tail are only supported with kubectl logs");
+  if (p.fieldSelector) only(p.verb === "get", "--field-selector is only supported with kubectl get events");
+  if (p.force || p.ignoreDaemonsets || p.deleteEmptydirData) only(p.verb === "drain", "--force, --ignore-daemonsets and --delete-emptydir-data are only supported with kubectl drain");
   if (p.revision !== undefined || p.toRevision !== undefined) only(p.verb === "rollout", "--revision and --to-revision are only supported with kubectl rollout");
   switch (p.verb) {
     case "help":
@@ -1256,6 +1388,17 @@ function execute(c: Cluster, p: Parsed): string {
       return rollout(c, p);
     case "apply":
       return apply(c, p);
+    case "taint":
+      return taint(c, p);
+    case "cordon":
+    case "uncordon":
+      return cordon(c, p, p.verb === "cordon");
+    case "drain":
+      return drain(c, p);
+    case "top":
+      return top(c, p);
+    case "logs":
+      return logs(c, p);
     default:
       fail(`error: "kubectl ${p.verb}" is not supported in this simulator.\nType "kubectl help" for the supported commands.`);
   }

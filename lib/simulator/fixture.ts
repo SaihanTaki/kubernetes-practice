@@ -1,4 +1,4 @@
-import { containerName, converge, crashes, list, meta, WORKERS } from "./cluster";
+import { containerName, converge, crashes, defaultNodes, list, meta } from "./cluster";
 import { run } from "./kubectl";
 import type { Cluster, Fixture, Labels } from "./types";
 
@@ -12,11 +12,13 @@ export function createCluster(fixture: Fixture = {}): Cluster {
   let c: Cluster = {
     clock: -FIXTURE_AGE,
     seq: 1,
-    nodes: ["control-plane", ...WORKERS],
+    nodes: [],
     namespaces: ["default", "kube-system", ...(fixture.namespaces ?? [])],
     resources: [],
+    events: [],
     files: { ...fixture.files },
   };
+  c.nodes = defaultNodes(c);
   const ns = (n?: string) => n ?? "default";
   for (const d of fixture.deployments ?? []) {
     c.resources.push({
@@ -43,7 +45,7 @@ export function createCluster(fixture: Fixture = {}): Cluster {
       metadata: meta(c, p.name, ns(p.namespace), p.labels ?? {}),
       image: p.image,
       container: { name: containerName(p.image) },
-      node: WORKERS[0],
+      node: "",
       status: p.status ?? "ContainerCreating",
       ready: p.status === "Running",
       restarts: p.restarts ?? 0,
@@ -58,7 +60,7 @@ export function createCluster(fixture: Fixture = {}): Cluster {
     converge(c);
   }
   for (const p of list(c, "Pod")) {
-    if ((p.status === "Running" || p.status === "CrashLoopBackOff") && crashes(p)) {
+    if ((p.status === "Running" || p.status === "CrashLoopBackOff" || p.status === "OOMKilled") && crashes(p)) {
       p.restarts = Math.max(p.restarts, AGED_RESTARTS);
       p.status = "CrashLoopBackOff";
     }

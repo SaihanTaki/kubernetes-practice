@@ -1,4 +1,6 @@
 import { z } from "zod";
+import { QUOTA_KEYS, parseHard } from "./simulator/admission";
+import { parseCpu, parseMemory, QUANTITY_ERROR } from "./simulator/quantity";
 
 const name = z.string().regex(/^[a-z0-9]([-a-z0-9]*[a-z0-9])?$/);
 
@@ -36,6 +38,61 @@ const probe = z
 
 const keyRef = z.object({ name, key: configKey });
 
+// YAML reads `cpu: 1` as a number; the API accepts it as the quantity "1".
+const quantity = (parse: (q: string) => number | null) =>
+  z.union([z.string(), z.number()]).transform(String).refine((q) => parse(q) !== null, QUANTITY_ERROR);
+const resourceList = z.object({ cpu: quantity(parseCpu).optional(), memory: quantity(parseMemory).optional() }).strict();
+
+const resources = z
+  .object({ requests: resourceList.optional(), limits: resourceList.optional() })
+  .superRefine((r, ctx) => {
+    for (const [name, parse] of [["cpu", parseCpu], ["memory", parseMemory]] as const) {
+      const req = r.requests?.[name];
+      const lim = r.limits?.[name];
+      if (req !== undefined && lim !== undefined && parse(req)! > parse(lim)!) {
+        ctx.addIssue({ code: "custom", path: ["requests"], message: `Invalid value: "${req}": must be less than or equal to ${name} limit of ${lim}` });
+      }
+    }
+  });
+
+const matchExpression = z
+  .object({ key: labelKey, operator: z.enum(["In", "NotIn", "Exists", "DoesNotExist"]), values: z.array(z.string()).optional() })
+  .refine((e) => (e.operator === "In" || e.operator === "NotIn" ? !!e.values?.length : !e.values?.length), {
+    message: "values must be non-empty for In and NotIn, and empty for Exists and DoesNotExist",
+  });
+const nodeSelectorTerm = z.object({ matchExpressions: z.array(matchExpression).optional() });
+const labelSelector = z.object({ matchLabels: labels.optional(), matchExpressions: z.array(matchExpression).optional() });
+const taintEffect = z.enum(["NoSchedule", "PreferNoSchedule", "NoExecute"]);
+
+const toleration = z
+  .object({
+    key: labelKey.optional(),
+    operator: z.enum(["Equal", "Exists"]).optional(),
+    value: z.string().regex(LABEL_VALUE_RE, "invalid label value").optional(),
+    effect: taintEffect.optional(),
+    tolerationSeconds: z.number().int().optional(),
+  })
+  .refine((t) => !(t.operator === "Exists" && t.value), { message: "value must be empty when operator is 'Exists'", path: ["value"] })
+  .refine((t) => t.key !== undefined || t.operator === "Exists", { message: "operator must be Exists when key is empty", path: ["operator"] });
+
+const affinity = z.object({
+  nodeAffinity: z
+    .object({
+      requiredDuringSchedulingIgnoredDuringExecution: z.object({ nodeSelectorTerms: z.array(nodeSelectorTerm).min(1) }).optional(),
+      preferredDuringSchedulingIgnoredDuringExecution: z
+        .array(z.object({ weight: z.number().int().min(1).max(100), preference: nodeSelectorTerm }))
+        .optional(),
+    })
+    .optional(),
+  podAntiAffinity: z
+    .object({
+      requiredDuringSchedulingIgnoredDuringExecution: z
+        .array(z.object({ labelSelector: labelSelector.optional(), topologyKey: labelKey }))
+        .optional(),
+    })
+    .optional(),
+});
+
 const container = z.object({
   name,
   image: z.string().min(1),
@@ -66,15 +123,34 @@ const container = z.object({
   readinessProbe: probe.optional(),
   livenessProbe: probe.optional(),
   startupProbe: probe.optional(),
-  resources: z
-    .object({ requests: z.record(z.string(), z.string()).optional(), limits: z.record(z.string(), z.string()).optional() })
-    .optional(),
+  resources: resources.optional(),
 });
 
 const podSpec = z.object({
   containers: z.array(container).min(1),
   restartPolicy: z.enum(["Always", "OnFailure", "Never"]).optional(),
+  nodeName: name.optional(),
+  nodeSelector: labels.optional(),
+  tolerations: z.array(toleration).optional(),
+  affinity: affinity.optional(),
 });
+
+const limitRangeItem = z.object({
+  type: z.enum(["Container", "Pod", "PersistentVolumeClaim"]),
+  default: resourceList.optional(),
+  defaultRequest: resourceList.optional(),
+  min: resourceList.optional(),
+  max: resourceList.optional(),
+});
+
+const quotaHard = z
+  .record(z.string(), z.union([z.string(), z.number()]).transform(String))
+  .superRefine((hard, ctx) => {
+    for (const [key, value] of Object.entries(hard)) {
+      if (!QUOTA_KEYS.includes(key)) ctx.addIssue({ code: "custom", path: [key], message: `unsupported quota key, use one of ${QUOTA_KEYS.join(", ")}` });
+      else if (parseHard(key, value) === null) ctx.addIssue({ code: "custom", path: [key], message: QUANTITY_ERROR });
+    }
+  });
 
 const intOrPercent = z.union([z.number().int().min(0), z.string().regex(/^\d+%$/)]);
 
@@ -134,6 +210,19 @@ const serviceSpec = z
 export const manifestSchema = z.discriminatedUnion("kind", [
   z.object({ apiVersion: z.literal("v1"), kind: z.literal("Namespace"), metadata: z.object({ name }) }),
   z.object({ apiVersion: z.literal("v1"), kind: z.literal("Pod"), metadata, spec: podSpec }),
+  z.object({
+    apiVersion: z.literal("v1"),
+    kind: z.literal("Node"),
+    metadata: z.object({ name, labels: labels.optional(), annotations: annotations.optional() }),
+    spec: z
+      .object({
+        taints: z.array(z.object({ key: labelKey, value: z.string().regex(LABEL_VALUE_RE, "invalid label value").optional(), effect: taintEffect })).optional(),
+        unschedulable: z.boolean().optional(),
+      })
+      .optional(),
+  }),
+  z.object({ apiVersion: z.literal("v1"), kind: z.literal("LimitRange"), metadata, spec: z.object({ limits: z.array(limitRangeItem).min(1) }) }),
+  z.object({ apiVersion: z.literal("v1"), kind: z.literal("ResourceQuota"), metadata, spec: z.object({ hard: quotaHard }) }),
   z.object({
     apiVersion: z.literal("apps/v1"),
     kind: z.literal("ReplicaSet"),
