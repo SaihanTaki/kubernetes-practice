@@ -13,6 +13,7 @@ import { data as config } from "./chapters/config.data";
 import { data as healthChecks } from "./chapters/health-checks.data";
 import { data as jobs } from "./chapters/jobs.data";
 import { data as ingress } from "./chapters/ingress.data";
+import { data as networkPolicies } from "./chapters/network-policies.data";
 import type { ChapterData, Difficulty } from "./types";
 
 export type Chapter = {
@@ -144,6 +145,15 @@ export const chapters: Chapter[] = [
     difficulty: "intermediate",
     ready: true,
     data: ingress,
+  },
+  {
+    slug: "network-policies",
+    section: "Workloads & Networking",
+    title: "Network Policies",
+    summary: "Decide which Pods may talk to which, and block everything else.",
+    difficulty: "advanced",
+    ready: true,
+    data: networkPolicies,
   },
   {
     slug: "config",
