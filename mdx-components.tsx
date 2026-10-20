@@ -13,7 +13,8 @@ const components: MDXComponents = {
   strong: (props) => <strong className="font-semibold" {...props} />,
   code: (props) => <code className="rounded bg-code px-1.5 py-0.5 font-mono text-[0.88em]" {...props} />,
   table: (props) => (
-    <div className="my-6 max-w-[70ch] overflow-x-auto rounded-lg border border-border">
+    // Tables get the full width: several columns do not fit the 70ch prose measure.
+    <div className="my-6 overflow-x-auto rounded-lg border border-border">
       <table className="w-full border-collapse text-left text-sm" {...props} />
     </div>
   ),
