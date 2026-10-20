@@ -18,6 +18,7 @@ import { data as resources } from "./chapters/resources.data";
 import { data as volumes } from "./chapters/volumes.data";
 import { data as daemonsetsStatefulsets } from "./chapters/daemonsets-statefulsets.data";
 import { data as scheduling } from "./chapters/scheduling.data";
+import { data as rbac } from "./chapters/rbac.data";
 import type { ChapterData, Difficulty } from "./types";
 
 export type Chapter = {
@@ -212,6 +213,15 @@ export const chapters: Chapter[] = [
     difficulty: "advanced",
     ready: true,
     data: scheduling,
+  },
+  {
+    slug: "rbac",
+    section: "Security & Operations",
+    title: "RBAC and ServiceAccounts",
+    summary: "Grant people and Pods exactly the API access they need, and check it with auth can-i.",
+    difficulty: "advanced",
+    ready: true,
+    data: rbac,
   },
 ];
 
