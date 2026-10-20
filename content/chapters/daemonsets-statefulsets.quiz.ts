@@ -368,4 +368,94 @@ export const quiz: QuizQuestion[] = [
     explanation:
       "Claims outlive the StatefulSet by default so data is not lost by accident. Recreating the StatefulSet with the same names picks them up again. Deleting them is a separate, deliberate step.",
   },
+  {
+    id: "daemonsets-statefulsets-sts-update-order",
+    topic: "StatefulSets",
+    difficulty: "intermediate",
+    question: "You change the image of StatefulSet web with 3 replicas and the default rolling update. In what order are the Pods replaced?",
+    options: [
+      { id: "a", text: "web-0 first, then web-1, then web-2" },
+      { id: "b", text: "All three at the same time" },
+      { id: "c", text: "web-2 first, then web-1, then web-0, one at a time" },
+      { id: "d", text: "New Pods web-3 to web-5 start, then the old ones are deleted" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "A StatefulSet rolling update replaces Pods from the highest ordinal down, one at a time. Creation goes up from web-0; updates and scale-down go down. Names stay the same, so no new ordinals appear.",
+  },
+  {
+    id: "daemonsets-statefulsets-sts-headless-dns",
+    topic: "StatefulSets",
+    difficulty: "intermediate",
+    question: "A client looks up the name of a headless Service in DNS. What does it get back?",
+    options: [
+      { id: "a", text: "The IPs of the Pods behind the Service, because there is no virtual IP" },
+      { id: "b", text: "One virtual IP that load-balances across the Pods" },
+      { id: "c", text: "The IPs of the nodes the Pods run on" },
+      { id: "d", text: "Nothing; only the per-Pod names resolve" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "clusterIP: None means no virtual IP and no load balancing. DNS answers with the Pod IPs directly, and each StatefulSet Pod also gets its own record such as web-0.web.",
+  },
+  {
+    id: "daemonsets-statefulsets-sts-service-owner",
+    topic: "StatefulSets",
+    difficulty: "beginner",
+    question: "Who creates the headless Service that a StatefulSet's serviceName refers to?",
+    options: [
+      { id: "a", text: "The StatefulSet controller, when the StatefulSet is created" },
+      { id: "b", text: "You do, before or together with the StatefulSet" },
+      { id: "c", text: "kube-proxy, when the first Pod is ready" },
+      { id: "d", text: "CoreDNS, when the first DNS query arrives" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "serviceName only names the Service. The StatefulSet does not create it, so you apply it yourself. Without it the Pods get no per-Pod DNS records.",
+  },
+  {
+    id: "daemonsets-statefulsets-sts-no-replicaset",
+    topic: "StatefulSets",
+    difficulty: "beginner",
+    question: "You create StatefulSet web and run kubectl get replicasets. What do you find for web?",
+    options: [
+      { id: "a", text: "One ReplicaSet per Pod" },
+      { id: "b", text: "One ReplicaSet named web-<hash>" },
+      { id: "c", text: "One ReplicaSet per PersistentVolumeClaim" },
+      { id: "d", text: "No ReplicaSet; the StatefulSet manages its Pods directly" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "A Deployment works through ReplicaSets, but a StatefulSet creates and replaces its Pods itself, so it can give each one a fixed ordinal, name, and claim.",
+  },
+  {
+    id: "daemonsets-statefulsets-sts-retention",
+    topic: "StatefulSet YAML",
+    difficulty: "advanced",
+    question: "Which StatefulSet field lets its claims be deleted automatically when the StatefulSet is deleted or scaled down?",
+    options: [
+      { id: "a", text: "reclaimPolicy: Delete under volumeClaimTemplates" },
+      { id: "b", text: "persistentVolumeClaimRetentionPolicy" },
+      { id: "c", text: "podManagementPolicy: Parallel" },
+      { id: "d", text: "updateStrategy: {type: OnDelete}" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "Without persistentVolumeClaimRetentionPolicy, StatefulSet claims are kept on scale-down and on delete. A reclaim policy decides what happens to a PV after its claim is deleted; it does not delete the claim. The other two fields are about Pods, not storage.",
+  },
+  {
+    id: "daemonsets-statefulsets-sts-vct-change",
+    topic: "StatefulSet YAML",
+    difficulty: "advanced",
+    question: "You change storage: 1Gi to storage: 5Gi in the volumeClaimTemplates of an existing StatefulSet and apply. What happens?",
+    options: [
+      { id: "a", text: "The update is rejected; volumeClaimTemplates cannot be changed on an existing StatefulSet" },
+      { id: "b", text: "Every existing claim grows to 5Gi" },
+      { id: "c", text: "The Pods are recreated with new 5Gi claims and the old data is copied over" },
+      { id: "d", text: "Only web-0's claim grows" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "Changing volumeClaimTemplates on an existing StatefulSet is rejected. The template is only used to create claims for new ordinals; it never resizes or replaces existing ones.",
+  },
 ];
