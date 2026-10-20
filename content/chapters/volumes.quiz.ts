@@ -376,4 +376,98 @@ export const quiz: QuizQuestion[] = [
     explanation:
       "The Container Storage Interface lets storage vendors ship drivers as Pods, usually a controller plus a node DaemonSet. A StorageClass's provisioner field names the driver.",
   },
+  {
+    id: "volumes-readonly-mount",
+    topic: "Volumes YAML",
+    difficulty: "intermediate",
+    question: "Two containers in a Pod mount the same volume. One of them must only read it. How do you do that?",
+    options: [
+      { id: "a", text: "Set readOnly: true on that container's volumeMounts entry" },
+      { id: "b", text: "Set accessModes: [ReadOnlyMany] on the claim" },
+      { id: "c", text: "Mount it under a path that starts with /readonly" },
+      { id: "d", text: "Add a second volumes entry with emptyDir for that container" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "readOnly on a volumeMount makes that one container's mount read-only. Access modes are not a permission system inside containers: they say how many nodes may mount the volume and how. An emptyDir would be a different, empty volume.",
+  },
+  {
+    id: "volumes-emptydir-memory",
+    topic: "emptyDir",
+    difficulty: "advanced",
+    question: "What is the trade-off of emptyDir: {medium: Memory}?",
+    options: [
+      { id: "a", text: "The data survives Pod deletion, but it is slower" },
+      { id: "b", text: "Every Pod on the node shares the same directory" },
+      { id: "c", text: "It is a fast tmpfs, but the files count toward the container's memory limit" },
+      { id: "d", text: "Files are written to the node's disk and only cached in memory" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "medium: Memory backs the emptyDir with tmpfs instead of the node's disk. It is faster, but what you store uses memory and counts toward the memory limit. Like any emptyDir it belongs to one Pod and is deleted with it.",
+  },
+  {
+    id: "volumes-configmap-files",
+    topic: "Volumes",
+    difficulty: "beginner",
+    question:
+      "A ConfigMap nginx-conf has the keys default.conf and gzip.conf. It is mounted as a volume at /etc/nginx/conf.d. What does the container see there?",
+    options: [
+      { id: "a", text: "One file named nginx-conf holding both keys" },
+      { id: "b", text: "Nothing; ConfigMaps can only be environment variables" },
+      { id: "c", text: "An empty directory that fills after the Pod restarts" },
+      { id: "d", text: "Two files, default.conf and gzip.conf, each holding its key's value" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "In a configMap or secret volume, each key becomes a file under the mount path. That is how whole config files and certificates are delivered. The volume is read-only.",
+  },
+  {
+    id: "volumes-multi-attach",
+    topic: "Access modes",
+    difficulty: "advanced",
+    question:
+      "A Deployment with 2 replicas shares one ReadWriteOnce claim on a cloud disk. The replica on a second node is stuck in ContainerCreating with a Multi-Attach error. Each replica should have its own data. What is the fix?",
+    options: [
+      { id: "a", text: "Run it as a StatefulSet with volumeClaimTemplates, so each Pod gets its own claim" },
+      { id: "b", text: "Restart the kubelet on the second node" },
+      { id: "c", text: "Change the claim's access mode to ReadWriteMany in place" },
+      { id: "d", text: "Raise the claim's storage request" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "A cloud block disk attaches to one node at a time, so a second node cannot mount it. volumeClaimTemplates give one claim per replica. Access modes cannot be changed on an existing claim, and the disk could not offer RWX anyway.",
+  },
+  {
+    id: "volumes-wffc-pending",
+    topic: "Binding",
+    difficulty: "intermediate",
+    question:
+      "A new claim of a WaitForFirstConsumer class shows Pending, and kubectl describe pvc says waiting for first consumer to be created before binding. No Pod uses it yet. What does that mean?",
+    options: [
+      { id: "a", text: "The StorageClass does not exist" },
+      { id: "b", text: "The cluster is out of disk space" },
+      { id: "c", text: "It is normal; the claim binds once a Pod that uses it is scheduled" },
+      { id: "d", text: "The claim must be recreated with a class that uses Immediate" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "With WaitForFirstConsumer, binding and provisioning wait until a Pod using the claim is scheduled, so the disk lands in that node's zone. A missing class shows a not found message instead.",
+  },
+  {
+    id: "volumes-delete-policy",
+    topic: "Reclaim policy",
+    difficulty: "intermediate",
+    question:
+      "A claim was dynamically provisioned from a class that does not set reclaimPolicy. No Pod uses it, and you delete the claim. What happens to the data?",
+    options: [
+      { id: "a", text: "The PV becomes Released and the data stays" },
+      { id: "b", text: "The PV becomes Available for the next claim, with the old files" },
+      { id: "c", text: "The data is kept until the namespace is deleted" },
+      { id: "d", text: "The PV and the underlying disk are deleted, and the data with them" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "A class's reclaimPolicy defaults to Delete, and dynamically provisioned PVs take it. Deleting the claim deletes the PV and the disk. Released with the data kept is what Retain does.",
+  },
 ];
