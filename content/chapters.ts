@@ -7,6 +7,7 @@ import { data as namespaces } from "./chapters/namespaces.data";
 import { data as pods } from "./chapters/pods.data";
 import { data as replicasets } from "./chapters/replicasets.data";
 import { data as services } from "./chapters/services.data";
+import { data as labels } from "./chapters/labels.data";
 import type { ChapterData, Difficulty } from "./types";
 
 export type Chapter = {
@@ -102,6 +103,15 @@ export const chapters: Chapter[] = [
     difficulty: "beginner",
     ready: true,
     data: services,
+  },
+  {
+    slug: "labels",
+    section: "Workloads & Networking",
+    title: "Labels, Selectors, and Annotations",
+    summary: "Tag objects with labels, pick them with selectors, and attach notes for tools with annotations.",
+    difficulty: "beginner",
+    ready: true,
+    data: labels,
   },
 ];
 

@@ -1,0 +1,174 @@
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## What labels are for
+
+A label is a key/value pair in an object's `metadata.labels`. Kubernetes gives labels no meaning of its own. They matter because **selectors** query them: a ReplicaSet finds its Pods by label, a Service finds the Pods to send traffic to by label, and you find objects with `kubectl get -l`.
+
+Nothing else ties these objects together. A ReplicaSet does not keep a list of Pod names; it asks "which Pods match my selector?" every time it checks.
+
+```text
+NAME        READY   STATUS    RESTARTS   AGE   LABELS
+frontend    1/1     Running   0          10m   app=shop,env=staging,tier=frontend
+api-87lt9   1/1     Running   0          10m   app=api
+```
+
+`kubectl get pods --show-labels` adds the `LABELS` column. On a real cluster, `-L tier,env` instead adds one column per key.
+
+## Label syntax
+
+A key has an optional prefix and a name, separated by a slash: `app.kubernetes.io/name`, or just `tier`.
+
+- **Name**: required, at most 63 characters. Letters, digits, `-`, `_`, and `.`, starting and ending with a letter or digit.
+- **Prefix**: optional, a DNS subdomain such as `example.com`, at most 253 characters. Keys without a prefix are private to you. `kubernetes.io/` and `k8s.io/` are reserved for Kubernetes components.
+- **Value**: at most 63 characters, same characters as the name, and may be empty. No spaces.
+
+Values are always strings. In YAML, quote anything that would otherwise parse as a number or boolean: `version: "1.1"`, `enabled: "true"`.
+
+## Recommended labels
+
+Kubernetes documents a shared set of labels under the `app.kubernetes.io` prefix. Dashboards, Helm, and other tools look for them, so using them makes your objects readable to tools you did not write.
+
+| Key | Meaning | Example |
+| --- | --- | --- |
+| `app.kubernetes.io/name` | Name of the application | `checkout` |
+| `app.kubernetes.io/instance` | This particular install | `checkout-prod` |
+| `app.kubernetes.io/version` | Application version | `"1.1"` |
+| `app.kubernetes.io/component` | Role inside the architecture | `api` |
+| `app.kubernetes.io/part-of` | The larger application | `shop` |
+| `app.kubernetes.io/managed-by` | Tool that manages it | `helm` |
+
+They are recommendations, not requirements. Shorter labels like `app`, `tier`, and `env` are still common for everyday filtering.
+
+## Selectors
+
+A selector is a list of requirements joined by **AND**. There is no OR between different keys.
+
+**Equality-based** requirements compare one key with one value:
+
+```bash
+kubectl get pods -l tier=frontend          # tier is frontend
+kubectl get pods -l env=prod,tier!=db      # env is prod AND tier is not db
+```
+
+**Set-based** requirements test a key against a set, or test whether it exists:
+
+```bash
+kubectl get pods -l 'env in (prod,staging)'      # env is prod or staging
+kubectl get pods -l 'tier notin (frontend,db)'   # tier is anything else, or missing
+kubectl get pods -l canary                       # has a canary label, any value
+kubectl get pods -l '!canary'                    # has no canary label
+```
+
+Quote set-based selectors in a shell: the parentheses, spaces, and `!` mean something to it. The simulated terminal accepts the same quoting, for example `-l 'tier in (frontend,db)'`.
+
+<Callout title="Common mistake: != and notin include Pods without the key">
+  `-l tier!=frontend` also returns Pods that have no `tier` label at all. If the key must exist, add it as its own
+  requirement: `-l tier,tier!=frontend`.
+</Callout>
+
+The diagram shows five Pods and three selectors. Step through it to see which Pods each selector picks.
+
+<Diagram id="label-selectors" />
+
+### Selectors in manifests
+
+ReplicaSets, Deployments, Jobs, and DaemonSets take a selector with two parts, and every entry in both must match:
+
+```yaml
+selector:
+  matchLabels:
+    app: web
+  matchExpressions:
+    - key: env
+      operator: In
+      values: [prod, staging]
+    - key: canary
+      operator: DoesNotExist
+```
+
+`matchLabels` is the equality form. Each `matchExpressions` entry has a `key`, an `operator`, and sometimes `values`:
+
+- `In`: the key exists and its value is in `values`.
+- `NotIn`: the value is not in `values`, or the key is missing.
+- `Exists`: the key is present. `values` must be empty.
+- `DoesNotExist`: the key is absent. `values` must be empty.
+
+The selector above picks Pods with `app=web`, an `env` of `prod` or `staging`, and no `canary` label. The simulator's manifest checker accepts only `matchLabels`, so the walkthrough below sticks to that.
+
+A Service is simpler: its `spec.selector` is a plain map, equality only, with no `matchLabels` or `matchExpressions` wrapper.
+
+## How controllers use selectors
+
+- A **ReplicaSet** counts the Pods matching its selector in its namespace and creates or deletes Pods to reach `replicas`. Its template labels must satisfy the selector, or the API server rejects it.
+- A **Deployment** passes its selector to the ReplicaSets it creates, adding a `pod-template-hash` label so each ReplicaSet only selects its own version's Pods.
+- A **Service** sends traffic to every ready Pod matching its selector, whoever owns it.
+
+A Deployment's selector is **immutable** in `apps/v1`. Once created, you cannot change it, so build it from labels that never change for the life of the app, such as name and instance. Leave version out: it changes with every release.
+
+<Callout title="Common mistake: overlapping selectors">
+  Two controllers whose selectors match the same Pods will fight over them. Kubernetes does not stop you creating
+  them. Include enough labels, such as an instance label, that each controller's selector is unique.
+</Callout>
+
+## Pulling a Pod out of a ReplicaSet
+
+Because ownership follows labels, you can take a misbehaving Pod out of service without killing it. Change a label the selector uses:
+
+```bash
+kubectl label pod api-87lt9 app=debug --overwrite
+```
+
+The ReplicaSet no longer matches `api-87lt9`, so it releases the Pod and counts only two. It creates a replacement to get back to three. The old Pod keeps running with no owner, and if a Service selected it by `app=api`, it stops receiving traffic too. You can now inspect it at leisure, then delete it.
+
+If you set the label back instead, the ReplicaSet adopts the Pod again, finds one Pod too many, and deletes one.
+
+## Annotations
+
+Annotations sit next to labels in `metadata.annotations` and are also key/value pairs, with the same key rules. The differences:
+
+- **Not selectable.** No selector, `-l` included, can match an annotation.
+- **Larger, free-form values.** Spaces, punctuation, JSON, whole paragraphs. All annotations on an object together can be up to 256 KiB.
+- **For people and tools.** They record facts that something reads, not facts you query by.
+
+Common examples:
+
+- `kubernetes.io/change-cause`: why a Deployment changed. `kubectl rollout history` shows it in the `CHANGE-CAUSE` column.
+- `kubectl.kubernetes.io/last-applied-configuration`: written by `kubectl apply` to compute later diffs.
+- `prometheus.io/scrape: "true"`: a convention that many Prometheus scrape configs look for. It works only if your Prometheus is configured to read it.
+- Your own notes under your domain: owner team, on-call channel, a link to a runbook.
+
+Rule of thumb: if anything will select on it, it is a label. Otherwise it is an annotation.
+
+## Changing labels and annotations with kubectl
+
+```bash
+kubectl label pod frontend tier=frontend env=staging     # add two labels
+kubectl label pod frontend env=prod --overwrite          # change an existing value
+kubectl label pod frontend env-                          # remove the env label
+kubectl annotate pod frontend example.com/owner=payments # add an annotation
+kubectl annotate pod frontend example.com/owner-         # remove it
+```
+
+Without `--overwrite`, changing a key that already has a value fails, which protects you from silently replacing a label a controller depends on. A trailing `-` removes the key. Labels set this way on a Pod managed by a Deployment are lost when the Pod is replaced; put lasting labels in the Pod template instead.
+
+## The manifest
+
+A Deployment using the recommended labels, a selector built from the ones that never change, and two annotations. Numbered lines are explained alongside.
+
+<YamlWalkthrough id="labels-deployment" />
+
+## Practice
+
+Label two Pods, find them with selectors, then pull a slow Pod out of its ReplicaSet and leave a note on it.
+
+<Lab id="labels-relabel" />
+
+## Check yourself
+
+<Quiz id="labels" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).
