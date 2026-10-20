@@ -8,6 +8,7 @@ import { data as pods } from "./chapters/pods.data";
 import { data as replicasets } from "./chapters/replicasets.data";
 import { data as services } from "./chapters/services.data";
 import { data as labels } from "./chapters/labels.data";
+import { data as rollouts } from "./chapters/rollouts.data";
 import type { ChapterData, Difficulty } from "./types";
 
 export type Chapter = {
@@ -112,6 +113,15 @@ export const chapters: Chapter[] = [
     difficulty: "beginner",
     ready: true,
     data: labels,
+  },
+  {
+    slug: "rollouts",
+    section: "Workloads & Networking",
+    title: "Rolling Updates and Rollbacks",
+    summary: "Control how a Deployment replaces Pods, watch a rollout, and undo a bad release.",
+    difficulty: "intermediate",
+    ready: true,
+    data: rollouts,
   },
 ];
 
