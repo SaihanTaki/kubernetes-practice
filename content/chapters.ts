@@ -6,6 +6,11 @@ import { data as intro } from "./chapters/intro.data";
 import { data as namespaces } from "./chapters/namespaces.data";
 import { data as pods } from "./chapters/pods.data";
 import { data as replicasets } from "./chapters/replicasets.data";
+import { data as services } from "./chapters/services.data";
+import { data as labels } from "./chapters/labels.data";
+import { data as rollouts } from "./chapters/rollouts.data";
+import { data as config } from "./chapters/config.data";
+import { data as healthChecks } from "./chapters/health-checks.data";
 import type { ChapterData, Difficulty } from "./types";
 
 export type Chapter = {
@@ -92,6 +97,51 @@ export const chapters: Chapter[] = [
     difficulty: "intermediate",
     ready: true,
     data: declarative,
+  },
+  {
+    slug: "services",
+    section: "Workloads & Networking",
+    title: "Services",
+    summary: "Give a changing set of Pods one stable address, and route traffic to them inside and outside the cluster.",
+    difficulty: "beginner",
+    ready: true,
+    data: services,
+  },
+  {
+    slug: "labels",
+    section: "Workloads & Networking",
+    title: "Labels, Selectors, and Annotations",
+    summary: "Tag objects with labels, pick them with selectors, and attach notes for tools with annotations.",
+    difficulty: "beginner",
+    ready: true,
+    data: labels,
+  },
+  {
+    slug: "rollouts",
+    section: "Workloads & Networking",
+    title: "Rolling Updates and Rollbacks",
+    summary: "Control how a Deployment replaces Pods, watch a rollout, and undo a bad release.",
+    difficulty: "intermediate",
+    ready: true,
+    data: rollouts,
+  },
+  {
+    slug: "config",
+    section: "Configuration",
+    title: "ConfigMaps and Secrets",
+    summary: "Keep settings and credentials out of the image and hand them to Pods as environment variables or files.",
+    difficulty: "beginner",
+    ready: true,
+    data: config,
+  },
+  {
+    slug: "health-checks",
+    section: "Configuration",
+    title: "Health Checks: Probes",
+    summary: "Tell Kubernetes when a container is started, ready for traffic, or stuck and in need of a restart.",
+    difficulty: "intermediate",
+    ready: true,
+    data: healthChecks,
   },
 ];
 

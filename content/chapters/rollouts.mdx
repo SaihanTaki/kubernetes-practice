@@ -1,0 +1,187 @@
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## What starts a rollout
+
+The Deployments chapter showed that a Deployment replaces Pods through a new ReplicaSet. This chapter is about controlling that replacement: its pace, how to watch it, and how to back out of a bad one.
+
+A rollout starts only when `spec.template` changes. A new image tag, a new environment variable, a changed label under `template.metadata`, or a new annotation on the template all count. Each distinct template gets its own ReplicaSet and its own **revision** number.
+
+Changes outside the template do not start a rollout:
+
+- `kubectl scale` or a new `spec.replicas` resizes the current ReplicaSet.
+- Changing `strategy`, `minReadySeconds`, or the Deployment's own labels and annotations updates the Deployment only.
+
+If you apply a template identical to an earlier revision, Kubernetes does not create a duplicate ReplicaSet. It scales the old one back up and gives it the next revision number.
+
+## RollingUpdate math
+
+`RollingUpdate` is the default strategy. Two numbers bound it, and both may be an integer or a percentage of `replicas`:
+
+- `maxSurge`: how many Pods may exist above `replicas`. Percentages round **up**.
+- `maxUnavailable`: how many Pods may be not ready below `replicas`. Percentages round **down**.
+
+Both default to `25%`. With `replicas: 4`, that gives `maxSurge` 1 and `maxUnavailable` 1, so during the rollout:
+
+- at most 4 + 1 = **5** Pods exist, old and new together;
+- at least 4 - 1 = **3** Pods are ready at every moment.
+
+The Deployment controller acts whenever a Pod changes state. It scales the new ReplicaSet up as far as the surge limit allows, then scales old ReplicaSets down as far as the ready count allows. Step through a rollout from `example/api:1.0` to `example/api:1.1`:
+
+<Diagram id="rollout-steps" />
+
+Notice the old ReplicaSet only shrinks when doing so keeps 3 Pods ready. New Pods that are still starting do not count. That is how readiness gates the rollout.
+
+## Readiness gates progress
+
+A new Pod counts toward the rollout once it is **available**: its readiness probe passes and it has stayed ready for `minReadySeconds` (default 0). Until then the controller treats it as unavailable and will not remove more old Pods.
+
+So a release whose Pods never become ready cannot take the app down. The rollout stops with old Pods still serving, which is the stuck rollout covered below. A readiness probe that checks something meaningful (a `/ready` endpoint rather than "the process exists") is what makes this protection real.
+
+`minReadySeconds` adds a waiting period on top of readiness: a Pod must stay ready for that many seconds before it counts. Use it when a crash tends to happen shortly after startup, so a Pod that passes its first probe and then falls over does not let the rollout move on.
+
+## Recreate
+
+```yaml
+strategy:
+  type: Recreate
+```
+
+`Recreate` scales every old Pod to 0 first, then creates the new Pods. The app is down between the two steps. Use it when old and new versions must not run at the same time, for example:
+
+- the new version runs a database schema migration the old version cannot handle;
+- the app holds an exclusive lock or a `ReadWriteOnce` volume that only one Pod can mount.
+
+`Recreate` takes no `maxSurge` or `maxUnavailable`.
+
+## The manifest
+
+This Deployment sets the rolling update bounds explicitly, records a change cause, and has a readiness probe so new Pods only count once the app answers on `/ready`.
+
+<YamlWalkthrough id="rollouts-deployment" />
+
+Three more `spec` fields shape rollouts. The simulator does not model them, so they are not in the walkthrough:
+
+```yaml
+spec:
+  minReadySeconds: 10          # a new Pod must stay ready 10s before it counts as available
+  progressDeadlineSeconds: 600 # after 10 minutes without progress, mark the rollout failed
+  revisionHistoryLimit: 5      # keep 5 old ReplicaSets for rollback (default 10)
+```
+
+- `progressDeadlineSeconds` (default 600): if the rollout makes no progress for this long, the Deployment's `Progressing` condition becomes `False` with reason `ProgressDeadlineExceeded`, and `kubectl rollout status` exits with an error. Kubernetes does **not** roll back on its own. You decide what to do.
+- `revisionHistoryLimit` (default 10): how many old ReplicaSets, scaled to 0, are kept. Each one is a revision you can roll back to. Older ones are deleted.
+
+## Recording why a revision exists
+
+`kubectl rollout history` shows a `CHANGE-CAUSE` column. It comes from the `kubernetes.io/change-cause` annotation on the Deployment, which the controller copies to the ReplicaSet of the current revision. Set it right after you make the change:
+
+```bash
+kubectl set image deployment/api api=example/api:1.1
+kubectl annotate deployment/api kubernetes.io/change-cause="upgrade to example/api:1.1" --overwrite
+```
+
+Or keep it in the manifest under `metadata.annotations`, as in the walkthrough above, so it changes with the file.
+
+<Callout title="Common mistake: relying on --record">
+  Older guides add `--record` to `kubectl apply` or `kubectl set image` to fill in the change cause. The flag is
+  deprecated and only stored the command line, which rarely says why. Set `kubernetes.io/change-cause` yourself.
+</Callout>
+
+## Watching and reading a rollout
+
+```bash
+kubectl rollout status deployment/api
+```
+
+`rollout status` waits and reports progress until the rollout finishes, then exits 0. CI pipelines run it after `apply` so a failed rollout fails the build.
+
+```text
+Waiting for deployment "api" rollout to finish: 2 out of 4 new replicas have been updated...
+Waiting for deployment "api" rollout to finish: 1 old replicas are pending termination...
+deployment "api" successfully rolled out
+```
+
+```bash
+kubectl rollout history deployment/api
+kubectl rollout history deployment/api --revision=2
+```
+
+```text
+deployment.apps/api
+REVISION  CHANGE-CAUSE
+1         deploy example/api:1.0
+2         upgrade to example/api:1.1
+3         upgrade to example/api:2.0
+```
+
+With `--revision`, it prints that revision's Pod template, so you can see exactly which image it used before rolling back to it.
+
+## Rolling back
+
+```bash
+kubectl rollout undo deployment/api                  # back to the previous revision
+kubectl rollout undo deployment/api --to-revision=1  # back to a specific revision
+```
+
+Undo copies the chosen revision's template into the Deployment, which starts an ordinary rolling update using the same `maxSurge` and `maxUnavailable`. The old ReplicaSet is reused and renumbered as the newest revision, so it disappears from its old place in the history.
+
+<Diagram id="rollout-history" />
+
+<Callout title="Common mistake: undo, then apply the old file">
+  `rollout undo` changes the live Deployment, not your manifest. If the file still says `example/api:2.0`, the next
+  `kubectl apply` rolls the bad image out again. Fix the file in version control after an undo.
+</Callout>
+
+## A stuck rollout
+
+When the new image cannot run, the new Pods never become ready, so the old ones are never removed. With the manifest above you would see:
+
+```text
+$ kubectl get pods
+NAME                   READY   STATUS             RESTARTS   AGE
+api-5d8f7c9b6-2xkqp    1/1     Running            0          12m
+api-5d8f7c9b6-7mzrt    1/1     Running            0          12m
+api-5d8f7c9b6-p4wld    1/1     Running            0          12m
+api-6b9c4f7d8-hn2vc    0/1     CrashLoopBackOff   3          2m
+api-6b9c4f7d8-tq8sj    0/1     CrashLoopBackOff   3          2m
+```
+
+Three old Pods still serve traffic (`replicas` minus `maxUnavailable`) and two new ones (one surge Pod plus one replacing a removed old Pod) keep failing. `ImagePullBackOff` instead of `CrashLoopBackOff` means the tag does not exist or the registry refused the pull. Either way the fix is one of:
+
+- `kubectl rollout undo` to return to the last good revision, then fix the release; or
+- change the template again (a corrected image tag). The rollout moves on to the newer template and the failing ReplicaSet is scaled down.
+
+## Pause, resume, and restart
+
+Every template change normally starts its own rollout. To batch several changes into one, pause first:
+
+```bash
+kubectl rollout pause deployment/api
+kubectl set image deployment/api api=example/api:1.1
+kubectl set env deployment/api LOG_LEVEL=debug
+kubectl rollout resume deployment/api
+```
+
+While paused, template changes are stored but no new ReplicaSet is created. On resume, one rollout applies all of them as a single revision. Scaling still works while paused, and `rollout undo` refuses to run until you resume.
+
+```bash
+kubectl rollout restart deployment/api
+```
+
+`rollout restart` replaces every Pod without changing the image. It sets a `kubectl.kubernetes.io/restartedAt` annotation on the Pod template, which is a template change, so it runs as a normal rolling update and adds a revision. Use it to pick up a changed ConfigMap or Secret that the Pods read only at startup.
+
+## Practice
+
+A bad release is stuck. Find the last good revision, roll back to it, and record why. The cluster view below the terminal shows both ReplicaSets as you work.
+
+<Lab id="rollouts-undo" />
+
+## Check yourself
+
+<Quiz id="rollouts" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).

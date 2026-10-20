@@ -1,0 +1,140 @@
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## Why Pod IPs are not stable
+
+Every Pod gets its own IP address. You can see it with `kubectl get pods -o wide`:
+
+```text
+NAME                   READY   STATUS    RESTARTS   AGE   IP            NODE
+api-6d9f7c8b5d-2xkqp   1/1     Running   0          10m   10.244.1.12   node-1
+api-6d9f7c8b5d-r7wmz   1/1     Running   0          10m   10.244.2.31   node-2
+```
+
+You should not hard-code those addresses. A Pod's IP lives only as long as the Pod. When a ReplicaSet replaces a crashed Pod, scales up, or a rollout swaps old Pods for new ones, the new Pods get new IPs. A client that saved `10.244.1.12` ends up talking to nothing, or to a different app that later received the same address.
+
+## What a Service gives you
+
+A **Service** is a stable front door for a changing set of Pods. It gives you:
+
+- **A stable virtual IP**, the ClusterIP. It is assigned from the cluster's Service IP range when the Service is created and does not change until you delete the Service.
+- **A DNS name.** The cluster DNS creates `<service>.<namespace>.svc.cluster.local`. A Pod in the same namespace can use just `api`. From another namespace, use `api.shop` or the full name.
+- **Load spreading.** Connections to the Service are spread across the ready Pods behind it. The choice is made per connection, not per request, so a client that keeps one HTTP connection open keeps talking to the same Pod.
+
+Step through a request from a client Pod to the `api` Service.
+
+<Diagram id="services-request-path" />
+
+## Selectors and endpoints
+
+A Service finds its Pods with a **label selector**. It does not point at a Deployment or a ReplicaSet. It matches any Pod in the same namespace whose labels include every key and value in `spec.selector`.
+
+The control plane keeps a list of the matching, ready Pods as `IP:targetPort` pairs. These are the Service's **endpoints**:
+
+```bash
+kubectl get endpoints api
+```
+
+```text
+NAME   ENDPOINTS                           AGE
+api    10.244.1.12:8080,10.244.2.31:8080   10m
+```
+
+The list updates on its own. A new Pod with matching labels is added once it is ready, and a deleted Pod is removed. A Pod that is running but not ready is left out, so it gets no traffic.
+
+In current Kubernetes the list is stored in **EndpointSlice** objects (`kubectl get endpointslices`), which split large Services into chunks. `kubectl get endpoints` still works and is shorter to read, though newer kubectl versions print a deprecation warning for it.
+
+## Four kinds of port
+
+Ports are where most Service mistakes happen. Four fields are involved:
+
+- **`containerPort`** in the Pod spec: the port the app listens on. It is informational. The app listens wherever it listens, whether or not you declare it.
+- **`targetPort`** in the Service: the Pod port that traffic is sent to. It must be the port the app really listens on. It defaults to the value of `port`, and it can also name a container port (`targetPort: http`).
+- **`port`** in the Service: the port clients use on the ClusterIP or DNS name.
+- **`nodePort`**: for NodePort and LoadBalancer Services only, a port opened on every node, from 30000 to 32767 by default.
+
+<Diagram id="services-port-mapping" />
+
+<Callout title="Common mistake: targetPort set to the Service port">
+  The api app listens on 8080. A Service with `port: 80` and no `targetPort` sends traffic to Pod port 80, where
+  nothing listens. The endpoints look healthy, because they only reflect labels and readiness, but every connection
+  is refused. Set `targetPort: 8080`.
+</Callout>
+
+## Service types
+
+`spec.type` decides who can reach the Service:
+
+- **ClusterIP** (the default): a virtual IP reachable only from inside the cluster. Use it for traffic between your own apps.
+- **NodePort**: everything ClusterIP gives, plus the same port opened on every node. Clients outside the cluster can connect to `<any-node-ip>:<nodePort>`. Useful for testing and bare-metal setups, but clients have to know node addresses.
+- **LoadBalancer**: everything NodePort gives, plus a request to the cloud provider for an external load balancer that forwards to the nodes. Its address appears in the `EXTERNAL-IP` column. On a cluster with no load balancer integration, such as a local one, it stays `<pending>`.
+
+Two special cases. An **ExternalName** Service has no selector and no ClusterIP; the cluster DNS answers its name with a CNAME to an outside host such as `db.example.com`, so apps can use a cluster name for an external dependency. A **headless** Service sets `clusterIP: None`: there is no virtual IP and no proxying, and a DNS lookup returns the IPs of the ready Pods directly. StatefulSets use headless Services so each Pod gets its own DNS name.
+
+## kube-proxy
+
+The ClusterIP does not belong to any Pod or machine. Something on each node has to turn "connect to `10.96.0.15:80`" into "connect to `10.244.2.31:8080`". That is **kube-proxy**.
+
+kube-proxy runs on every node, usually as a DaemonSet. It watches Services and EndpointSlices through the API server and writes packet rules into the node's kernel (iptables, IPVS, or nftables, depending on its mode). When a Pod opens a connection to a ClusterIP, the kernel rewrites the destination to one of the endpoints. kube-proxy only maintains the rules. In iptables and nftables mode it does not handle the traffic itself.
+
+Some network plugins, such as Cilium, can replace kube-proxy with their own implementation. The Service behaviour stays the same.
+
+## Creating a Service
+
+The quick way is `kubectl expose`. It reads the selector from the Deployment, so the Service matches its Pods:
+
+```bash
+kubectl expose deployment api --port=80 --target-port=8080
+kubectl expose deployment api --port=80 --target-port=8080 --type=NodePort --name=api-public
+```
+
+The Service is named after the Deployment unless you pass `--name`. Without `--type` you get a ClusterIP Service.
+
+`expose` is fine for experiments. For anything you keep, write a manifest, store it next to the Deployment manifest, and `kubectl apply -f` it. Then the selector and ports are reviewed in version control, and a recreated cluster gets the same Service.
+
+## The Service manifest
+
+A ClusterIP Service for the api Pods. They are labelled `app: api` and listen on 8080.
+
+<YamlWalkthrough id="service-clusterip" />
+
+The same Pods exposed outside the cluster with a NodePort Service. Two Services can select the same Pods.
+
+<YamlWalkthrough id="service-nodeport" />
+
+<Callout title="Common mistake: matchLabels in a Service">
+  Deployments use `selector.matchLabels`. A Service selector is a plain map directly under `spec.selector`, with no
+  `matchLabels` and no set expressions. Copying the Deployment's selector block into a Service is rejected.
+</Callout>
+
+## Debugging a Service with no endpoints
+
+A Service that returns "connection refused" or times out usually has no endpoints. Work through it in order:
+
+1. `kubectl get endpoints web`. If `ENDPOINTS` shows `<none>`, no ready Pod matches.
+2. `kubectl describe service web`. Note the `Selector` line, for example `app=nginx`.
+3. `kubectl get pods --show-labels`, or test the selector directly with `kubectl get pods -l app=nginx`. If no Pods come back, the selector and the Pod labels disagree.
+4. If Pods do match but are not `1/1` ready, the problem is readiness, not the Service. Fix the Pods.
+5. Fix the selector in the Service manifest and apply it. Run `kubectl get endpoints web` again.
+
+<Callout title="Common mistake: selecting on the Deployment's name or the image">
+  The selector has to match labels on the Pods, which come from the Deployment's `spec.template.metadata.labels`.
+  Labels on the Deployment object itself, its name, and the image name do not count.
+</Callout>
+
+If endpoints exist but requests still fail, check that `targetPort` matches the port the container listens on.
+
+## Practice
+
+Fix a Service that has no endpoints, then expose a second app outside the cluster.
+
+<Lab id="services-fix-selector" />
+
+## Check yourself
+
+<Quiz id="services" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).

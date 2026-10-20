@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { chapters, sections } from "../../content/chapters";
 import { data as declarative } from "../../content/chapters/declarative.data";
 
 const errors: string[] = [];
@@ -24,9 +25,9 @@ test("home links every chapter and the cheatsheet", async ({ page }) => {
   await page.goto("/");
   await noHorizontalOverflow(page);
   await expect(page.getByText("(coming soon)")).toHaveCount(0);
-  await expect(page.getByRole("heading", { level: 2, name: "Basics" })).toBeVisible();
-  for (const name of ["Introduction to Kubernetes", "Kubernetes Architecture", "Pods", "ReplicaSets", "Deployments", "Namespaces", "Imperative Commands", "Declarative YAML"]) {
-    await expect(page.getByRole("main").getByRole("link", { name: new RegExp(`^\\d\\d ${name} `) })).toBeVisible();
+  for (const section of sections) await expect(page.getByRole("heading", { level: 2, name: section })).toBeVisible();
+  for (const { title } of chapters) {
+    await expect(page.getByRole("main").getByRole("link", { name: new RegExp(`^\\d\\d ${title} `) })).toBeVisible();
   }
   await page.getByRole("link", { name: /^05 Deployments / }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Deployments" })).toBeVisible();
@@ -34,16 +35,7 @@ test("home links every chapter and the cheatsheet", async ({ page }) => {
   await expect(page.getByRole("heading", { level: 1, name: "Cheatsheet" })).toBeVisible();
 });
 
-for (const [slug, title] of [
-  ["intro", "Introduction to Kubernetes"],
-  ["architecture", "Kubernetes Architecture"],
-  ["pods", "Pods"],
-  ["replicasets", "ReplicaSets"],
-  ["deployments", "Deployments"],
-  ["namespaces", "Namespaces"],
-  ["imperative", "Imperative Commands"],
-  ["declarative", "Declarative YAML"],
-]) {
+for (const { slug, title } of chapters) {
   test(`chapter ${slug} renders`, async ({ page }) => {
     await page.goto(`/chapters/${slug}`);
     await expect(page.getByRole("heading", { level: 1, name: title })).toBeVisible();

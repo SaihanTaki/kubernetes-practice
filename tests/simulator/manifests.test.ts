@@ -136,10 +136,11 @@ describe("imperative create", () => {
 });
 
 describe("set image", () => {
-  it("rolls the Deployment to a new ReplicaSet and scales the old one to 0", () => {
+  it("rolls the Deployment to a new ReplicaSet step by step and scales the old one to 0", () => {
     const before = list(web(), "ReplicaSet")[0].metadata.name;
-    const r = exec(web(), "kubectl set image deployment/web nginx=nginx:1.28");
+    let r = exec(web(), "kubectl set image deployment/web nginx=nginx:1.28");
     expect(r.output).toBe("deployment.apps/web image updated");
+    r = exec(r.c, "kubectl get pods", "kubectl get pods", "kubectl get pods");
     const d = find(r.c, "Deployment", "default", "web")!;
     const sets = replicaSetsOf(r.c, d);
     expect(sets).toHaveLength(2);
@@ -204,6 +205,7 @@ describe("apply", () => {
     expect(r.output).toBe("deployment.apps/api configured");
     const d = find(r.c, "Deployment", "default", "api")!;
     expect(d).toMatchObject({ replicas: 3, template: { image: "nginx:1.28" } });
+    r = exec(r.c, "kubectl get pods", "kubectl get pods", "kubectl get pods");
     expect(replicaSetsOf(r.c, d).map((rs) => rs.replicas).sort()).toEqual([0, 3]);
   });
 
@@ -242,7 +244,7 @@ describe("apply", () => {
 
   it("reports missing files and unknown kinds", () => {
     expect(exec(createCluster(), "kubectl apply -f x.yaml").output).toBe('error: the path "x.yaml" does not exist');
-    expect(exec(files("apiVersion: v1\nkind: Service\nmetadata:\n  name: x\n"), "kubectl apply -f app.yaml").output).toMatch(/^error: app\.yaml: kind: /);
+    expect(exec(files("apiVersion: apps/v1\nkind: StatefulSet\nmetadata:\n  name: x\n"), "kubectl apply -f app.yaml").output).toMatch(/^error: app\.yaml: kind: /);
     expect(exec(files(""), "kubectl apply -f app.yaml").error).toBe(true);
     expect(exec(createCluster(), "kubectl apply").error).toBe(true);
   });
