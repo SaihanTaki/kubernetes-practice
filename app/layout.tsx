@@ -1,5 +1,6 @@
 import type { Metadata } from "next";
 import Link from "next/link";
+import { ThemeSelect, themeScript } from "@/components/ThemeSelect";
 import "./globals.css";
 
 export const metadata: Metadata = {
@@ -9,7 +10,11 @@ export const metadata: Metadata = {
 
 export default function RootLayout({ children }: Readonly<{ children: React.ReactNode }>) {
   return (
-    <html lang="en">
+    // The theme script sets data-theme before hydration, so React would otherwise warn about the mismatch.
+    <html lang="en" suppressHydrationWarning>
+      <head>
+        <script dangerouslySetInnerHTML={{ __html: themeScript }} />
+      </head>
       <body className="font-sans antialiased">
         <header className="border-b border-border">
           <nav className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-1 px-4 py-3">
@@ -22,6 +27,7 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
             <Link href="/cheatsheet" className="py-2 text-muted hover:text-fg">
               Cheatsheet
             </Link>
+            <ThemeSelect />
           </nav>
         </header>
         <main className="mx-auto max-w-5xl px-4 py-8">{children}</main>

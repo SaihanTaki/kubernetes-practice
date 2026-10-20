@@ -10,10 +10,12 @@
   --ok: #15803d;
   --bad: #b91c1c;
   --code-bg: #f0efed;
+  color-scheme: light;
 }
 
+/* The OS preference applies unless the reader picked a theme (data-theme on <html>). */
 @media (prefers-color-scheme: dark) {
-  :root {
+  :root:not([data-theme="light"]) {
     --bg: #121212;
     --surface: #1b1b1b;
     --fg: #ededed;
@@ -23,7 +25,21 @@
     --ok: #4ade80;
     --bad: #f87171;
     --code-bg: #232323;
+    color-scheme: dark;
   }
+}
+
+:root[data-theme="dark"] {
+  --bg: #121212;
+  --surface: #1b1b1b;
+  --fg: #ededed;
+  --muted: #a8a29e;
+  --border: #3a3a3a;
+  --accent: #8ab4ff;
+  --ok: #4ade80;
+  --bad: #f87171;
+  --code-bg: #232323;
+  color-scheme: dark;
 }
 
 @theme inline {

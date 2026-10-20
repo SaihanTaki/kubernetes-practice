@@ -176,3 +176,23 @@ test("keyboard focus is visible", async ({ page }) => {
   const outline = await page.evaluate(() => getComputedStyle(document.activeElement!).outlineStyle);
   expect(outline).not.toBe("none");
 });
+
+test("theme can be chosen and is remembered", async ({ page }) => {
+  await page.goto("/");
+  const bg = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
+  const select = page.getByRole("combobox", { name: "Theme" });
+
+  await select.selectOption("dark");
+  expect(await bg()).toBe("rgb(18, 18, 18)");
+  await page.reload();
+  await expect(select).toHaveValue("dark");
+  expect(await bg()).toBe("rgb(18, 18, 18)");
+
+  await select.selectOption("light");
+  expect(await bg()).toBe("rgb(250, 250, 249)");
+
+  await select.selectOption("system");
+  await page.reload();
+  await expect(select).toHaveValue("system");
+  expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBeUndefined();
+});
