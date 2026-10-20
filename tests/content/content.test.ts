@@ -1,4 +1,4 @@
-import { existsSync } from "node:fs";
+import { existsSync, readdirSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import { parse } from "yaml";
 import { chapters, diagrams, labs, manifests, quizzes } from "@/content/chapters";
@@ -11,8 +11,10 @@ import { createCluster, run } from "@/lib/simulator";
 const unique = (ids: string[]) => expect(new Set(ids).size).toBe(ids.length);
 
 describe("chapters", () => {
-  it("has the Basics chapters in order", () => {
-    expect(chapters.map((c) => c.slug)).toEqual(["intro", "architecture", "pods", "replicasets", "deployments", "namespaces", "imperative", "declarative"]);
+  it("registers every chapter file exactly once", () => {
+    const files = readdirSync("content/chapters").filter((f) => f.endsWith(".mdx")).map((f) => f.slice(0, -4));
+    unique(chapters.map((c) => c.slug));
+    expect(chapters.map((c) => c.slug).sort()).toEqual(files.sort());
   });
 
   it.each(chapters.filter((c) => c.ready))("$slug has content, objectives, and a YAML question", (c) => {

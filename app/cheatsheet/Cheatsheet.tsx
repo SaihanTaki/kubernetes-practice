@@ -2,7 +2,6 @@
 
 import Link from "next/link";
 import { useState } from "react";
-import { chapters } from "@/content/chapters";
 import type { CheatsheetEntry } from "@/content/cheatsheet";
 
 function CopyButton({ text }: { text: string }) {
@@ -24,7 +23,9 @@ function CopyButton({ text }: { text: string }) {
   );
 }
 
-export function Cheatsheet({ entries }: { entries: CheatsheetEntry[] }) {
+type Props = { entries: CheatsheetEntry[]; chapterTitles: Record<string, string> };
+
+export function Cheatsheet({ entries, chapterTitles }: Props) {
   const [query, setQuery] = useState("");
   const q = query.trim().toLowerCase();
   const shown = entries.filter((e) =>
@@ -55,17 +56,17 @@ export function Cheatsheet({ entries }: { entries: CheatsheetEntry[] }) {
             {shown
               .filter((e) => e.category === category)
               .map((e) => {
-                const chapter = chapters.find((c) => c.slug === e.relatedChapter && c.ready);
+                const title = e.relatedChapter && chapterTitles[e.relatedChapter];
                 return (
                   <li key={e.id}>
                     <h3 className="font-medium">{e.title}</h3>
                     <p className="mt-1 text-sm text-muted">
                       {e.explanation} {e.simulated ? "Works in the simulator." : "Real cluster only, not simulated yet."}
-                      {chapter && (
+                      {title && (
                         <>
                           {" "}
-                          <Link href={`/chapters/${chapter.slug}`} className="text-accent underline underline-offset-4">
-                            {chapter.title} chapter
+                          <Link href={`/chapters/${e.relatedChapter}`} className="text-accent underline underline-offset-4">
+                            {title} chapter
                           </Link>
                         </>
                       )}
