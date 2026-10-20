@@ -71,7 +71,7 @@ Known limits, on purpose:
 ## Project layout
 
 ```text
-app/                 routes: home, chapters/[slug], playground, cheatsheet
+app/                 routes: home, chapters/[slug], cheatsheet
 components/          terminal, lab, diagram, quiz, YAML walkthrough
 content/             chapters (MDX), labs, quizzes, manifests, cheatsheet
 lib/simulator/       the kubectl simulator, no React

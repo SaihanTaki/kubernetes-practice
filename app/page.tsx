@@ -25,12 +25,10 @@ export default function Home() {
           </p>
         </div>
         <div className="rounded-lg border border-border bg-surface p-4 text-sm">
-          <p className="font-medium">Already know the basics?</p>
+          <p className="font-medium">Looking for one command?</p>
           <p className="mt-1 text-muted">
-            Open the <Link href="/playground" className="text-accent underline underline-offset-4">playground</Link> for a
-            free cluster, or search the{" "}
-            <Link href="/cheatsheet" className="text-accent underline underline-offset-4">cheatsheet</Link> for a
-            command.
+            Search the <Link href="/cheatsheet" className="text-accent underline underline-offset-4">cheatsheet</Link>.
+            Every command marked for the simulator runs in the chapter labs.
           </p>
         </div>
       </div>
