@@ -1,0 +1,119 @@
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## What a namespace is
+
+A namespace is a name scope inside one cluster. Every namespaced resource, such as a Pod or a Deployment, lives in exactly one namespace, and its name only has to be unique within that namespace. Two teams can each run a Deployment called `web` as long as they use different namespaces.
+
+That is all a namespace does on its own. It groups names. It does not isolate network traffic, limit CPU or memory, or stop one user from reading another team's resources. Those need extra objects, covered in later chapters:
+
+- **RBAC** Roles and RoleBindings decide who may do what in a namespace.
+- **NetworkPolicy** decides which Pods may talk to each other.
+- **ResourceQuota** caps how much CPU, memory, or how many objects a namespace may use.
+
+<Callout title="Common mistake: treating a namespace as a security boundary">
+  By default, a Pod in `dev` can reach a Pod in `prod` over the network, and anyone allowed to read Pods in every
+  namespace sees both. Putting workloads in separate namespaces is only the first step. Isolation comes from RBAC and
+  NetworkPolicy applied per namespace.
+</Callout>
+
+## Built-in namespaces
+
+A new cluster starts with four namespaces:
+
+- `default`: where your resources go when you do not name a namespace.
+- `kube-system`: components Kubernetes itself runs, such as CoreDNS and kube-proxy. Leave it alone.
+- `kube-public`: readable by everyone, including unauthenticated clients. Used for a small amount of cluster information.
+- `kube-node-lease`: holds one Lease object per node. The kubelet renews it as a heartbeat so the control plane can tell the node is alive.
+
+The simulator lists only `default` and `kube-system`, plus any namespaces a lab adds.
+
+## Namespaced and cluster-scoped resources
+
+Not every resource lives in a namespace. Pods, ReplicaSets, Deployments, Services, and ConfigMaps are **namespaced**. Nodes and Namespaces themselves are **cluster-scoped**: there is one list of them for the whole cluster, and their names must be unique cluster-wide. A namespace cannot contain another namespace.
+
+The diagram shows one cluster with two namespaces that each hold a Deployment called `web`. Select a box to see why the names do not clash.
+
+<Diagram id="ns-scope" />
+
+## Choosing the namespace with -n and -A
+
+Every kubectl command works in one namespace. Without a flag it uses `default`. Use `-n` (or `--namespace`) to pick another:
+
+```bash
+kubectl create namespace dev
+kubectl create deployment web --image=nginx:1.27 --replicas=2 -n dev
+kubectl get pods -n dev
+```
+
+To list a resource type across every namespace, use `-A` (or `--all-namespaces`). The output gains a `NAMESPACE` column:
+
+```text
+NAMESPACE   NAME   READY   UP-TO-DATE   AVAILABLE   AGE
+default     web    3/3     3            3           2d
+dev         web    2/2     2            2           1m
+```
+
+`-A` only works for listing. You cannot fetch a single resource by name across all namespaces, because the name alone does not identify it.
+
+<Callout title='Common mistake: "not found" because of the wrong namespace'>
+  `kubectl get deployment web` returns NotFound when `web` lives in `dev`, because kubectl looked in `default`. When
+  something seems to be missing, check `kubectl get deployments -A` before assuming it was deleted.
+</Callout>
+
+### Changing your default namespace
+
+Typing `-n dev` on every command gets old. On a real cluster you can change the namespace your current kubeconfig context uses:
+
+```bash
+kubectl config set-context --current --namespace=dev
+```
+
+From then on, commands without `-n` go to `dev`. This setting lives in your local kubeconfig file, not in the cluster, so it affects only you. The simulator does not support `kubectl config`, so use `-n` in the lab.
+
+## Deleting a namespace
+
+`kubectl delete namespace staging` deletes the namespace **and every resource inside it**: Deployments, ReplicaSets, Pods, and everything else. There is no confirmation prompt and no undo. Step through the diagram to see what goes and what stays.
+
+<Diagram id="ns-delete" />
+
+On a real cluster the namespace first shows `Terminating` while Kubernetes removes its contents, then disappears. `default` and `kube-system` cannot be deleted.
+
+<Callout title="Common mistake: deleting a namespace to remove one app">
+  If `staging` holds three apps and you only want to remove one, delete that Deployment. Deleting the namespace takes
+  every app in it along with it.
+</Callout>
+
+## The Namespace manifest
+
+A Namespace is one of the shortest manifests you will write. It has no `spec` worth setting.
+
+<YamlWalkthrough id="namespace" />
+
+To put another resource in a namespace from YAML, set `metadata.namespace`. This Deployment always lands in `dev`, whatever namespace your context or `-n` points at. On a real cluster, if you pass a different `-n` than the one in the file, kubectl refuses with an error about the mismatch. The namespace must already exist, or the API server rejects the Deployment.
+
+<YamlWalkthrough id="namespaced-deployment" />
+
+## When to use namespaces
+
+Namespaces work well for splitting one cluster between:
+
+- **Teams**: each team gets its own namespace, and RBAC limits them to it.
+- **Environments**: `dev` and `staging` in the same cluster, with the same resource names in each, so the same manifests apply to both.
+
+Avoid creating a namespace per app inside one team, or a namespace per tiny service. You end up passing `-n` everywhere without gaining anything. Keep in mind that every namespace shares the same nodes and control plane.
+
+## Practice
+
+Create a `dev` namespace with its own `web` Deployment and clean up an old `staging` namespace, without touching the `web` in `default`. The diagram below the terminal shows the same cluster.
+
+<Lab id="namespaces-staging" />
+
+## Check yourself
+
+<Quiz id="namespaces" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).
