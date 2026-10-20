@@ -15,6 +15,8 @@ export type LabDefinition = {
   objectives: { id: string; description: string; validator: Validator }[];
   hints: string[];
   solution: string[];
+  /** Files as the learner should leave them after editing, written before the solution commands run. */
+  solutionFiles?: Record<string, string>;
 };
 
 export function check(c: Cluster, v: Validator): boolean {
