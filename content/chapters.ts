@@ -6,6 +6,7 @@ import { data as intro } from "./chapters/intro.data";
 import { data as namespaces } from "./chapters/namespaces.data";
 import { data as pods } from "./chapters/pods.data";
 import { data as replicasets } from "./chapters/replicasets.data";
+import { data as services } from "./chapters/services.data";
 import type { ChapterData, Difficulty } from "./types";
 
 export type Chapter = {
@@ -92,6 +93,15 @@ export const chapters: Chapter[] = [
     difficulty: "intermediate",
     ready: true,
     data: declarative,
+  },
+  {
+    slug: "services",
+    section: "Workloads & Networking",
+    title: "Services",
+    summary: "Give a changing set of Pods one stable address, and route traffic to them inside and outside the cluster.",
+    difficulty: "beginner",
+    ready: true,
+    data: services,
   },
 ];
 
