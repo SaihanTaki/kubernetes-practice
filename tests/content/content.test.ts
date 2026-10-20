@@ -12,7 +12,7 @@ const unique = (ids: string[]) => expect(new Set(ids).size).toBe(ids.length);
 
 describe("chapters", () => {
   it("has the Basics chapters in order", () => {
-    expect(chapters.map((c) => c.slug)).toEqual(["architecture", "pods", "replicasets", "deployments", "namespaces", "imperative", "declarative"]);
+    expect(chapters.map((c) => c.slug)).toEqual(["intro", "architecture", "pods", "replicasets", "deployments", "namespaces", "imperative", "declarative"]);
   });
 
   it.each(chapters.filter((c) => c.ready))("$slug has content, objectives, and a YAML question", (c) => {

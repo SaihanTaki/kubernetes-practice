@@ -4,6 +4,7 @@ import { notFound } from "next/navigation";
 import { chapters } from "@/content/chapters";
 
 const content: Record<string, () => Promise<{ default: React.ComponentType }>> = {
+  intro: () => import("@/content/chapters/intro.mdx"),
   architecture: () => import("@/content/chapters/architecture.mdx"),
   pods: () => import("@/content/chapters/pods.mdx"),
   replicasets: () => import("@/content/chapters/replicasets.mdx"),

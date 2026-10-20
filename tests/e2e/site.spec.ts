@@ -25,16 +25,17 @@ test("home links every chapter and the cheatsheet", async ({ page }) => {
   await noHorizontalOverflow(page);
   await expect(page.getByText("(coming soon)")).toHaveCount(0);
   await expect(page.getByRole("heading", { level: 2, name: "Basics" })).toBeVisible();
-  for (const name of ["Kubernetes Architecture", "Pods", "ReplicaSets", "Deployments", "Namespaces", "Imperative Commands", "Declarative YAML"]) {
+  for (const name of ["Introduction to Kubernetes", "Kubernetes Architecture", "Pods", "ReplicaSets", "Deployments", "Namespaces", "Imperative Commands", "Declarative YAML"]) {
     await expect(page.getByRole("main").getByRole("link", { name: new RegExp(`^\\d\\d ${name} `) })).toBeVisible();
   }
-  await page.getByRole("link", { name: /^04 Deployments / }).click();
+  await page.getByRole("link", { name: /^05 Deployments / }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Deployments" })).toBeVisible();
   await page.getByRole("navigation").getByRole("link", { name: "Cheatsheet" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Cheatsheet" })).toBeVisible();
 });
 
 for (const [slug, title] of [
+  ["intro", "Introduction to Kubernetes"],
   ["architecture", "Kubernetes Architecture"],
   ["pods", "Pods"],
   ["replicasets", "ReplicaSets"],

@@ -1,0 +1,146 @@
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## What Kubernetes does
+
+A container image packages an app with everything it needs to run. Running one container on one machine is easy. Running dozens of them across many machines is not: something has to pick a machine for each container, restart it when it crashes, replace it when its machine dies, add copies when load goes up, and swap in a new version without dropping traffic.
+
+Kubernetes does that work. You give it a group of machines, called **nodes**, and describe the containers you want. It places them on nodes, watches them, and fixes what breaks.
+
+You do not tell Kubernetes what steps to take. You tell it what you want to exist, for example "three copies of `nginx:1.27`, reachable on port 80". This is the **desired state**. Kubernetes stores it and runs loops called **controllers** that keep comparing it with what is actually running. When the two differ, because a container crashed or you changed the image tag, a controller acts to close the gap. Nobody re-runs a command.
+
+## Everything is an object
+
+Kubernetes is driven by **objects** stored in its API. A Pod is an object, so is a Deployment, a Service, or a Namespace. Every object has a kind, a name, and the state you want for it. `kubectl` creates, reads, changes, and deletes these objects; the cluster reacts to them.
+
+Here are the objects you will meet most often. Do not try to memorise them now. Each later chapter covers one or two in depth.
+
+| Object | What it is for | apiVersion | Namespaced | Covered in |
+|---|---|---|---|---|
+| `Pod` | One or more containers that run together on one node | `v1` | yes | [Pods](/chapters/pods) |
+| `ReplicaSet` | Keeps a fixed number of identical Pods running | `apps/v1` | yes | [ReplicaSets](/chapters/replicasets) |
+| `Deployment` | Manages ReplicaSets to scale an app and roll out new versions | `apps/v1` | yes | [Deployments](/chapters/deployments) |
+| `StatefulSet` | Runs Pods with stable names and their own storage, for databases | `apps/v1` | yes | later |
+| `DaemonSet` | Runs one Pod on every node, for agents such as log collectors | `apps/v1` | yes | later |
+| `Job` | Runs Pods until a task finishes successfully | `batch/v1` | yes | later |
+| `CronJob` | Creates a Job on a schedule | `batch/v1` | yes | later |
+| `Service` | A stable name and IP that sends traffic to Pods chosen by label | `v1` | yes | later |
+| `Ingress` | Routes HTTP traffic from outside the cluster to Services by host and path | `networking.k8s.io/v1` | yes | later |
+| `ConfigMap` | Configuration that Pods read as environment variables or files | `v1` | yes | later |
+| `Secret` | Passwords, tokens, and keys, given to Pods the same way | `v1` | yes | later |
+| `PersistentVolumeClaim` | A request for storage of a given size, used by Pods | `v1` | yes | later |
+| `PersistentVolume` | A piece of storage that a claim binds to | `v1` | no | later |
+| `StorageClass` | A type of storage, so volumes can be created on demand | `storage.k8s.io/v1` | no | later |
+| `Namespace` | Divides one cluster into separate groups of names | `v1` | no | [Namespaces](/chapters/namespaces) |
+| `Node` | A machine that runs Pods | `v1` | no | later |
+| `ServiceAccount` | An identity for processes in a Pod that call the API | `v1` | yes | later |
+| `Role` | A set of permissions inside one namespace | `rbac.authorization.k8s.io/v1` | yes | later |
+| `RoleBinding` | Grants a Role to users, groups, or ServiceAccounts in a namespace | `rbac.authorization.k8s.io/v1` | yes | later |
+| `ClusterRole` | A set of permissions that applies across the cluster | `rbac.authorization.k8s.io/v1` | no | later |
+| `HorizontalPodAutoscaler` | Changes a workload's replica count based on metrics such as CPU | `autoscaling/v2` | yes | later |
+
+**Namespaced** objects live inside a namespace, so two teams can each have a Deployment called `web`. Cluster-scoped objects, such as Nodes and Namespaces themselves, have one name across the whole cluster.
+
+### Reading apiVersion
+
+Kubernetes groups its kinds into **API groups**, and each group is versioned. The `apiVersion` field names both:
+
+- The original kinds, such as Pod, Service, and Namespace, are in the **core group**. It has no name, so `apiVersion` is just the version: `v1`.
+- Every other kind is in a named group, written `<group>/<version>`: `apps/v1`, `batch/v1`, `networking.k8s.io/v1`.
+
+Versions go through three stages. **Alpha** (such as `v1alpha1`) is off by default and can change or disappear. **Beta** (such as `v2beta1`) is well tested but may still change. **Stable** (`v1`, `v2`) is what you should use. Every apiVersion in the table above is stable.
+
+On a real cluster, two commands answer "which apiVersion is this kind in?" without leaving the terminal. They are not part of the simulator.
+
+```bash
+kubectl api-resources          # every kind, its group/version, and whether it is namespaced
+kubectl explain deployment     # the fields of a kind, with descriptions
+```
+
+## How the objects connect
+
+Objects refer to each other in two ways. Some **own** others: a Deployment creates a ReplicaSet, which creates Pods. Others **select** Pods by label or are **referenced** from the Pod spec. Select a box for details, or step through the connections.
+
+<Diagram id="object-map" />
+
+## Anatomy of a manifest
+
+You usually write objects as YAML files called **manifests**. Every manifest has the same top-level shape:
+
+- `apiVersion`: the API group and version that defines the kind.
+- `kind`: the type of object, such as `Pod` or `Deployment`.
+- `metadata`: identity. `name`, `namespace`, and `labels` work the same way for every kind.
+- `spec`: the desired state. You write it, and its fields depend on the kind.
+
+Once the object is stored, the cluster adds server-set `metadata` fields and a `status` section. The diagram groups the fields by who writes them.
+
+<Diagram id="manifest-anatomy" />
+
+Here is a minimal Pod. It is the smallest complete manifest you can apply.
+
+<YamlWalkthrough id="pod-basic" />
+
+And a minimal Deployment. Compare the first two lines: different group, different kind, same shape below.
+
+<YamlWalkthrough id="intro-deployment" />
+
+### status: written by the cluster
+
+You never write `status`. After the Pod is created, the kubelet and control plane fill it in. `kubectl get pod hello -o yaml` shows it below `spec`, trimmed here:
+
+```yaml
+status:
+  phase: Running
+  podIP: 10.244.1.7
+  hostIP: 192.168.49.3
+  containerStatuses:
+    - name: web
+      ready: true
+      restartCount: 0
+```
+
+If you include a `status` section in a manifest you apply, the API server ignores it. Only the components that observe the object change its status.
+
+<Callout title="Common mistake: mismatched apiVersion and kind">
+  Each kind lives in one API group. `apiVersion: apps/v1` with `kind: Pod` is rejected because Pods are in the core
+  group, `v1`. A real cluster reports `no matches for kind "Pod" in version "apps/v1"`. Check the table above or run
+  `kubectl api-resources`.
+</Callout>
+
+## Two ways to tell Kubernetes what you want
+
+**Imperative**: you run a command for each change. It is quick for experiments and one-off fixes, but the cluster becomes the only record of what you did.
+
+```bash
+kubectl create deployment web --image=nginx:1.27
+kubectl scale deployment web --replicas=3
+```
+
+**Declarative**: you keep manifests in files, usually in Git, and apply them. To change something, you edit the file and apply it again. Kubernetes works out what changed.
+
+```bash
+kubectl apply -f web.yaml
+# edit replicas in web.yaml, then
+kubectl apply -f web.yaml
+```
+
+Both end with the same objects in the cluster. Most teams use declarative files for anything that lasts. The [imperative](/chapters/imperative) and [declarative](/chapters/declarative) chapters cover each in depth.
+
+## Practice
+
+Apply a manifest with the wrong apiVersion, read the error, and fix it in the file editor.
+
+<Lab id="intro-first-manifest" />
+
+## Check yourself
+
+<Quiz id="intro" />
+
+## Next
+
+[Architecture](/chapters/architecture) shows the machines and components behind the API: what stores your objects, which controller acts on them, and how a Pod ends up running on a node.
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).
