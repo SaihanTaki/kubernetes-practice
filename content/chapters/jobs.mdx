@@ -1,0 +1,145 @@
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## Work that finishes
+
+A web server should run forever. A database migration, a nightly report, or an image resize should run, succeed, and stop. Kubernetes has a separate controller for each kind of work: Deployments keep Pods running, **Jobs** run Pods until a number of them succeed, and **CronJobs** create Jobs on a schedule.
+
+## Why not a Deployment
+
+You could put a batch script in a Deployment, but every part of it works against you:
+
+- A Deployment's Pod template only accepts `restartPolicy: Always`. When your script exits with code 0, the kubelet starts it again, and again, and the Pod ends up in `CrashLoopBackOff` even though it succeeded.
+- Nothing records that the work is done. There is no "succeeded" count, only "running" or "not running".
+- There is no limit on retries for a script that keeps failing, and no time limit.
+
+A Job tracks successful Pod completions, retries failures up to a limit, and then stops.
+
+## How a Job runs Pods
+
+A Job creates Pods from its template and counts how many exit with code 0. Three fields shape the run:
+
+- `completions` (default 1): how many Pods must succeed.
+- `parallelism` (default 1): how many Pods may run at the same time. The Job never runs more Pods than it still needs.
+- `backoffLimit` (default 6): how many failed attempts are allowed before the whole Job is marked `Failed` with reason `BackoffLimitExceeded`. Retries are delayed with an exponential back-off (10s, 20s, 40s, up to 6 minutes).
+
+Here is a Job with `parallelism: 2` and `completions: 4`. One Pod fails along the way. Step through it.
+
+<Diagram id="job-progress" />
+
+Two more fields put limits on the whole Job:
+
+- `activeDeadlineSeconds`: a time limit for the Job, counted from when it starts. When it runs out, Kubernetes stops the running Pods and marks the Job `Failed` with reason `DeadlineExceeded`, however many retries are left.
+- `ttlSecondsAfterFinished`: delete the Job, and its Pods with it, this many seconds after it finishes (Complete or Failed). Without it, finished Jobs stay until you delete them.
+
+## restartPolicy: Never or OnFailure
+
+A Job's Pod template must set `restartPolicy` to `Never` or `OnFailure`. `Always`, the Pod default, is rejected:
+
+```text
+The Job "report" is invalid: spec.template.spec.restartPolicy: Unsupported value: "Always": supported values: "OnFailure", "Never"
+```
+
+The two allowed values fail in different places:
+
+| | `Never` | `OnFailure` |
+| --- | --- | --- |
+| Container exits non-zero | The Pod stays as `Error`. The Job creates a new Pod. | The kubelet restarts the container inside the same Pod. |
+| What counts toward `backoffLimit` | Each failed Pod | Each container restart |
+| Logs of a failed attempt | Still there in the failed Pod | Only the last one, with `kubectl logs --previous` |
+
+Use `Never` while you are still debugging, because every failed attempt keeps its own Pod and logs. `OnFailure` creates fewer Pods once the Job is stable.
+
+<Callout title="Common mistake: editing a Job to fix it">
+  A Job's Pod template cannot be changed after the Job is created. `kubectl apply` with a new command fails with
+  `field is immutable`. Delete the Job and apply it again. Deleting a Job also deletes its Pods.
+</Callout>
+
+## Finding a Job's Pods and logs
+
+Every Pod a Job creates is named `<job>-<random suffix>` and carries the label `job-name=<job>` (newer clusters also add `batch.kubernetes.io/job-name`). Use the label to list them:
+
+```bash
+kubectl get jobs
+kubectl get pods -l job-name=report
+kubectl logs report-7xk2p
+kubectl logs job/report
+```
+
+```text
+NAME     STATUS   COMPLETIONS   DURATION   AGE
+report   Failed   0/3           40s        40s
+```
+
+`kubectl logs job/report` picks one of the Job's Pods for you. When several Pods failed, list them with the label and read each one. `kubectl describe job report` shows the Pod counts (`Pods Statuses: 0 Active / 0 Succeeded / 3 Failed`) and events such as `BackoffLimitExceeded`.
+
+## Indexed Jobs
+
+By default the Pods of a Job are interchangeable: any 4 successes finish a `completions: 4` Job. With `completionMode: Indexed`, each Pod gets a fixed index from 0 to `completions - 1`, in the environment variable `JOB_COMPLETION_INDEX` and the annotation `batch.kubernetes.io/job-completion-index`, and the Job is complete when every index has one successful Pod. Use it to split work into fixed shards, such as "Pod 2 processes the third file".
+
+## CronJobs
+
+A CronJob holds a schedule and a Job template. Each time the schedule fires, it creates a Job, and that Job creates Pods. Job names are the CronJob name plus the scheduled time in minutes, for example `nightly-report-29345280`.
+
+<Diagram id="cronjob-ownership" />
+
+### Schedule syntax
+
+`schedule` uses the five cron fields: minute, hour, day of month, month, day of week.
+
+| Schedule | Runs |
+| --- | --- |
+| `*/15 * * * *` | Every 15 minutes |
+| `0 * * * *` | At the start of every hour (same as `@hourly`) |
+| `30 2 * * *` | Every day at 02:30 |
+| `0 9 * * 1-5` | 09:00 Monday to Friday |
+| `0 0 1 * *` | Midnight on the first of every month (same as `@monthly`) |
+
+Times use the time zone of the kube-controller-manager, which is UTC in most clusters. To run in a local time zone, set `spec.timeZone` to a tz database name such as `Europe/Berlin`. Do not put `CRON_TZ=` or `TZ=` inside `schedule`; the API server rejects it.
+
+### Controlling runs
+
+- `concurrencyPolicy`: what happens when a run is due while the previous Job is still running. `Allow` (default) starts another Job alongside it. `Forbid` skips the new run. `Replace` deletes the running Job and starts the new one.
+- `suspend: true`: no new Jobs are created. Jobs that already started keep running. Runs missed while suspended can be started as soon as you resume, unless `startingDeadlineSeconds` says they are too old.
+- `successfulJobsHistoryLimit` (default 3) and `failedJobsHistoryLimit` (default 1): how many finished Jobs, and their Pods, are kept for you to inspect. Older ones are deleted.
+
+Pause a CronJob without editing its file, and start a run right now from its template:
+
+```bash
+kubectl patch cronjob nightly-report -p '{"spec":{"suspend":true}}'
+kubectl create job nightly-report-manual --from=cronjob/nightly-report
+```
+
+The second command is how you test a CronJob without waiting for its schedule, or rerun a night that failed.
+
+<Callout title="Common mistake: assuming exactly one run">
+  A CronJob creates about one Job per schedule time. In rare cases, such as a controller restart, it can create two
+  or none, and a Job can run a Pod more than once after a node failure. Write batch work so that running it twice
+  gives the same result: overwrite the output file for a date instead of appending, or skip rows that are already
+  processed.
+</Callout>
+
+## The manifests
+
+A Job that must succeed four times, at most two Pods at a time:
+
+<YamlWalkthrough id="job" />
+
+A CronJob that runs a report every night. Everything under `jobTemplate.spec` is the same as a Job's `spec`:
+
+<YamlWalkthrough id="cronjob" />
+
+## Practice
+
+The `report` Job keeps failing. Read its logs, fix its command, and run it again. Then pause the `cleanup` CronJob and start one run by hand. Each simulator command moves Pods one step, so run `kubectl get pods` a few times to watch them finish.
+
+<Lab id="jobs-fix-and-trigger" />
+
+## Check yourself
+
+<Quiz id="jobs" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).

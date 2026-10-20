@@ -11,6 +11,7 @@ import { data as labels } from "./chapters/labels.data";
 import { data as rollouts } from "./chapters/rollouts.data";
 import { data as config } from "./chapters/config.data";
 import { data as healthChecks } from "./chapters/health-checks.data";
+import { data as jobs } from "./chapters/jobs.data";
 import type { ChapterData, Difficulty } from "./types";
 
 export type Chapter = {
@@ -124,6 +125,15 @@ export const chapters: Chapter[] = [
     difficulty: "intermediate",
     ready: true,
     data: rollouts,
+  },
+  {
+    slug: "jobs",
+    section: "Workloads & Networking",
+    title: "Jobs and CronJobs",
+    summary: "Run work to completion, retry failures, and start it on a schedule.",
+    difficulty: "intermediate",
+    ready: true,
+    data: jobs,
   },
   {
     slug: "config",
