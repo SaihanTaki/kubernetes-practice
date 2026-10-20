@@ -12,6 +12,7 @@ import { data as rollouts } from "./chapters/rollouts.data";
 import { data as config } from "./chapters/config.data";
 import { data as healthChecks } from "./chapters/health-checks.data";
 import { data as jobs } from "./chapters/jobs.data";
+import { data as ingress } from "./chapters/ingress.data";
 import type { ChapterData, Difficulty } from "./types";
 
 export type Chapter = {
@@ -134,6 +135,15 @@ export const chapters: Chapter[] = [
     difficulty: "intermediate",
     ready: true,
     data: jobs,
+  },
+  {
+    slug: "ingress",
+    section: "Workloads & Networking",
+    title: "Ingress",
+    summary: "Route HTTP traffic from outside the cluster to Services by host name and path.",
+    difficulty: "intermediate",
+    ready: true,
+    data: ingress,
   },
   {
     slug: "config",
