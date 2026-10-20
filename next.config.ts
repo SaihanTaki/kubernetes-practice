@@ -6,4 +6,5 @@ const nextConfig: NextConfig = {
   pageExtensions: ["ts", "tsx", "mdx"],
 };
 
-export default createMDX()(nextConfig);
+// Plugins are passed by name so Turbopack can serialize the MDX options.
+export default createMDX({ options: { remarkPlugins: [["remark-gfm"]] } })(nextConfig);
