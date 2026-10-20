@@ -20,7 +20,7 @@ async function command(page: Page, text: string) {
   await input.press("Enter");
 }
 
-test("home links every chapter, playground, and cheatsheet", async ({ page }) => {
+test("home links every chapter and the cheatsheet", async ({ page }) => {
   await page.goto("/");
   await noHorizontalOverflow(page);
   await expect(page.getByText("(coming soon)")).toHaveCount(0);
@@ -30,10 +30,8 @@ test("home links every chapter, playground, and cheatsheet", async ({ page }) =>
   }
   await page.getByRole("link", { name: /^04 Deployments / }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Deployments" })).toBeVisible();
-  for (const name of ["Playground", "Cheatsheet"]) {
-    await page.getByRole("navigation").getByRole("link", { name }).click();
-    await expect(page.getByRole("heading", { level: 1, name })).toBeVisible();
-  }
+  await page.getByRole("navigation").getByRole("link", { name: "Cheatsheet" }).click();
+  await expect(page.getByRole("heading", { level: 1, name: "Cheatsheet" })).toBeVisible();
 });
 
 for (const [slug, title] of [
@@ -125,7 +123,7 @@ test("lab completes through the terminal and resets", async ({ page }) => {
 });
 
 test("terminal history recalls previous commands", async ({ page }) => {
-  await page.goto("/playground");
+  await page.goto("/chapters/pods");
   await command(page, "kubectl get nodes");
   const input = page.getByRole("textbox", { name: /command$/ });
   await input.press("ArrowUp");
@@ -133,15 +131,16 @@ test("terminal history recalls previous commands", async ({ page }) => {
 });
 
 test("diagram follows the cluster and shows details", async ({ page }) => {
-  await page.goto("/playground");
-  const pods = page.getByRole("button", { name: /^Pod / });
+  await page.goto("/chapters/pods");
+  const lab = page.getByRole("region", { name: /Lab:/ });
+  const pods = lab.getByRole("button", { name: /^Pod / });
   await expect(pods).toHaveCount(3);
-  await page.getByRole("button", { name: /toolbox/ }).click();
-  await expect(page.getByText(/Controlled By:\s+<none>/)).toBeVisible();
+  await lab.getByRole("button", { name: /worker/ }).click();
+  await expect(lab.getByText(/Controlled By:\s+<none>/)).toBeVisible();
 
-  await command(page, "kubectl delete pod toolbox");
+  await command(page, "kubectl delete pod worker");
   await expect(pods).toHaveCount(2);
-  await expect(page.getByText("That resource no longer exists.")).toBeVisible();
+  await expect(lab.getByText("That resource no longer exists.")).toBeVisible();
   await noHorizontalOverflow(page);
 });
 
@@ -182,25 +181,29 @@ test("keyboard focus is visible", async ({ page }) => {
   expect(outline).not.toBe("none");
 });
 
-test("theme can be chosen and is remembered", async ({ page }) => {
+test("theme button cycles system, light, dark and is remembered", async ({ page }) => {
   await page.goto("/");
   const bg = () => page.evaluate(() => getComputedStyle(document.body).backgroundColor);
-  const select = page.getByRole("combobox", { name: "Theme" });
+  const button = page.getByRole("button", { name: /^Theme:/ });
 
-  await select.selectOption("dark");
-  expect(await bg()).toBe("rgb(17, 20, 26)");
-  await page.reload();
-  await expect(select).toHaveValue("dark");
-  expect(await bg()).toBe("rgb(17, 20, 26)");
-
-  await select.selectOption("light");
+  await expect(button).toHaveAccessibleName("Theme: System. Switch to Light");
+  await button.click();
+  await expect(button).toHaveAccessibleName("Theme: Light. Switch to Dark");
   expect(await bg()).toBe("rgb(246, 243, 236)");
+  await button.click();
+  await expect(button).toHaveAccessibleName("Theme: Dark. Switch to System");
+  expect(await bg()).toBe("rgb(17, 20, 26)");
 
-  await select.selectOption("system");
   await page.reload();
-  await expect(select).toHaveValue("system");
+  await expect(button).toHaveAccessibleName("Theme: Dark. Switch to System");
+  expect(await bg()).toBe("rgb(17, 20, 26)");
+
+  await button.click();
+  await page.reload();
+  await expect(button).toHaveAccessibleName("Theme: System. Switch to Light");
   expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBeUndefined();
 });
+
 
 test("declarative lab: fix the file in the editor, then apply", async ({ page }) => {
   await page.goto("/chapters/declarative");
