@@ -1,0 +1,121 @@
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## What imperative means
+
+With imperative commands you tell kubectl which action to take, one command at a time: create this, scale that, change this image. Each command changes the live cluster straight away, and the only record of what you asked for is your shell history.
+
+The other style is declarative: you write the whole desired state into YAML files and run `kubectl apply -f` to make the cluster match them. That is the [next chapter](/chapters/declarative). Both styles end up talking to the same API server and creating the same objects. The difference is where the description of your app lives.
+
+<Diagram id="imperative-vs-declarative" />
+
+## The core commands
+
+- `kubectl run debug --image=busybox:1.36` creates a bare Pod named `debug`, labelled `run=debug`.
+- `kubectl create deployment api --image=nginx:1.27 --replicas=3` creates a Deployment labelled `app=api`. The Deployment creates a ReplicaSet, which creates 3 Pods.
+- `kubectl create namespace team-a` creates a Namespace.
+- `kubectl scale deployment api --replicas=5` changes `spec.replicas` on an existing Deployment.
+- `kubectl set image deployment/api nginx=nginx:1.28` changes the container image in the Deployment's Pod template.
+- `kubectl delete pod debug` deletes the object.
+
+`kubectl run` and `kubectl create deployment` look alike but create very different things. Select a box to see what each one leaves behind.
+
+<Diagram id="imperative-creates" />
+
+The container name comes from the image: `nginx:1.27` gives a container named `nginx`, and `busybox:1.36` gives `busybox`. You need that name for `kubectl set image`.
+
+<Callout title="Common mistake: using kubectl run for an app">
+  `kubectl run` creates a single Pod with no controller. If it is deleted or its node fails, nothing replaces it, and
+  you cannot scale it. Use it for throwaway debugging Pods. For anything that should keep running, use
+  `kubectl create deployment`.
+</Callout>
+
+### Changing the image
+
+`kubectl set image` edits the Pod template of a Deployment, so it starts a rollout exactly as editing the YAML would:
+
+```bash
+kubectl set image deployment/api nginx=nginx:1.28
+kubectl get replicasets
+```
+
+```text
+NAME             DESIRED   CURRENT   READY   AGE
+api-2tmhtrmrp5   0         0         0       10s
+api-k888gmbfbs   3         3         0       0s
+```
+
+The Deployment created a second ReplicaSet for the new template and scaled the old one to 0. The part before `=` is the container name, not the Deployment name.
+
+<Callout title="Common mistake: wrong container name in set image">
+  `kubectl set image deployment/api api=nginx:1.28` fails because the container is called `nginx`, not `api`. Check
+  the name with `kubectl describe deployment api` or `kubectl get deployment api -o yaml`.
+</Callout>
+
+### Commands the simulator does not cover
+
+Real clusters have more imperative commands. Three you will meet early:
+
+- `kubectl expose deployment api --port=80` creates a Service in front of the Deployment's Pods.
+- `kubectl edit deployment api` opens the live object in your editor and saves your changes back to the cluster.
+- `kubectl label pod debug env=dev` adds or changes a label on an existing object.
+
+The simulated terminal on this site does not support them.
+
+## When imperative commands fit
+
+Imperative commands are good for:
+
+- **Learning and exploring**: one command, one visible result.
+- **Debugging**: `kubectl run debug --image=busybox:1.36` gives you a throwaway Pod to poke around from.
+- **One-off tasks**: scaling up for a traffic spike, creating a scratch namespace.
+- **Speed**: no file to write first.
+
+Their limits show up as soon as a team or a second environment is involved:
+
+- **No record**: nothing in version control says what you ran or why. Your shell history is not a shared source of truth.
+- **Hard to review**: a colleague cannot review a command before it changes the cluster the way they can review a YAML diff.
+- **Hard to repeat**: rebuilding the same setup in another cluster means remembering every command, flag, and order.
+- **Drift**: if someone later applies a YAML file that still says `replicas: 3`, your `kubectl scale --replicas=5` is quietly undone, and nothing warned either of you.
+
+<Callout title="Common mistake: mixing styles on the same object">
+  If a Deployment is managed from a YAML file, change the file and apply it. A `kubectl scale` or `kubectl set image`
+  on top works until the next `kubectl apply`, which sets the fields back to what the file says.
+</Callout>
+
+## From command to YAML
+
+You do not have to write a manifest from scratch. Add `--dry-run=client -o yaml` and kubectl builds the object locally, prints it as YAML, and sends nothing to the cluster. Redirect the output to a file and you have a starting point for the declarative workflow:
+
+```bash
+kubectl create deployment web --image=nginx:1.27 --replicas=2 --dry-run=client -o yaml > web.yaml
+```
+
+<Diagram id="dry-run-bridge" />
+
+Without `-o yaml`, `--dry-run=client` only prints `deployment.apps/web created (dry run)`. With it, this simulator prints the following. Numbered lines are explained alongside.
+
+<YamlWalkthrough id="generated-deployment" />
+
+Real kubectl prints the same structure plus a few empty placeholders, such as `creationTimestamp: null`, `resources: {}`, and `status: {}`. They do nothing, so most people delete them before saving the file to version control.
+
+<Callout title="Common mistake: forgetting --dry-run">
+  `kubectl create deployment web --image=nginx:1.27 -o yaml > web.yaml` without `--dry-run=client` creates the
+  Deployment for real and also writes the file. Running `kubectl apply -f web.yaml` afterwards works, but you did not
+  get the review step you wanted.
+</Callout>
+
+## Practice
+
+Create a debugging Pod and a Deployment with imperative commands, update the Deployment's image, and save its manifest to a file. The diagram below the terminal shows the cluster as you work.
+
+<Lab id="imperative-basics" />
+
+## Check yourself
+
+<Quiz id="imperative" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).
