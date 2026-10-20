@@ -332,4 +332,67 @@ export const quiz: QuizQuestion[] = [
     explanation:
       "--dry-run=client stops kubectl from sending a change, and -o yaml prints what it would have sent. Nothing is created or updated.",
   },
+  {
+    id: "declarative-removed-field",
+    topic: "kubectl apply",
+    difficulty: "advanced",
+    question:
+      "You applied web.yaml with a label tier: frontend on the Deployment. You delete that label from the file and apply again. What happens, and why?",
+    options: [
+      { id: "a", text: "The label stays, because apply only adds or changes fields that are in the file" },
+      { id: "b", text: "apply fails because a field is missing" },
+      { id: "c", text: "The label is removed, because apply compares with the last-applied-configuration annotation" },
+      { id: "d", text: "The Deployment is deleted and recreated without the label" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "kubectl stores the file it last applied in the kubectl.kubernetes.io/last-applied-configuration annotation. It sees the label was in the old file and not the new one, so it removes it from the object. Without that record, apply could not tell a removed field from one set some other way.",
+  },
+  {
+    id: "declarative-directory",
+    topic: "kubectl apply",
+    difficulty: "beginner",
+    question:
+      "A git repository has a manifests/ directory with ten YAML files. On a real cluster, how do you apply all of them in one command?",
+    options: [
+      { id: "a", text: "kubectl apply manifests/" },
+      { id: "b", text: "kubectl apply -f manifests/*.git" },
+      { id: "c", text: "kubectl create -f manifests/ --all" },
+      { id: "d", text: "kubectl apply -f manifests/" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "-f accepts a directory and applies every manifest in it, which is how a new cluster is rebuilt from the repository. apply always needs -f before the path, and create would fail for objects that already exist.",
+  },
+  {
+    id: "declarative-git-rollback",
+    topic: "Reviewing changes",
+    difficulty: "intermediate",
+    question:
+      "A reviewed commit changed the image in web.yaml, was applied, and broke the app. With the declarative workflow, how do you go back?",
+    options: [
+      { id: "a", text: "Run kubectl set image with the old tag and leave the file as it is" },
+      { id: "b", text: "Run kubectl delete -f web.yaml and wait for the old version to return" },
+      { id: "c", text: "Revert the commit and run kubectl apply -f web.yaml" },
+      { id: "d", text: "Edit the live Deployment and commit nothing" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "Reverting puts the old spec back in the file, and applying makes the cluster match it, so file and cluster stay in step. A set image on top would be undone by the next apply, and delete -f removes the app entirely.",
+  },
+  {
+    id: "declarative-save-only",
+    topic: "Declarative model",
+    difficulty: "beginner",
+    question: "You change replicas: 2 to replicas: 3 in web.yaml and save the file. What has happened in the cluster?",
+    options: [
+      { id: "a", text: "The Deployment scales to 3 within a few seconds" },
+      { id: "b", text: "The Deployment is marked as out of date" },
+      { id: "c", text: "The ReplicaSet scales to 3, but the Deployment still says 2" },
+      { id: "d", text: "Nothing yet; the cluster changes only when you run kubectl apply" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "The cluster does not watch your file. Saving it changes nothing until kubectl apply sends it to the API server, which then updates spec.replicas.",
+  },
 ];
