@@ -125,10 +125,10 @@ export const cheatsheet: CheatsheetEntry[] = [
     category: "Deployments",
     keywords: ["rollout", "status", "undo", "history", "update"],
     explanation: "Follows an update until it finishes, or returns to the previous ReplicaSet.",
-    code: "kubectl rollout status deployment/web\nkubectl rollout undo deployment/web",
+    code: "kubectl set image deployment/web nginx=nginx:1.28\nkubectl rollout status deployment/web\nkubectl rollout undo deployment/web",
     language: "bash",
-    simulated: false,
-    relatedChapter: "deployments",
+    simulated: true,
+    relatedChapter: "rollouts",
   },
   {
     id: "get-nodes",
@@ -285,5 +285,193 @@ spec:
     language: "yaml",
     simulated: false,
     relatedChapter: "replicasets",
+  },
+  {
+    id: "expose",
+    title: "Expose a Deployment as a Service",
+    category: "Services",
+    keywords: ["expose", "service", "port", "target-port", "nodeport"],
+    explanation: "Creates a Service that selects the Deployment's Pods. --target-port is the container port; it defaults to --port.",
+    code: "kubectl expose deployment web --port=80 --target-port=80 --type=NodePort",
+    language: "bash",
+    simulated: true,
+    relatedChapter: "services",
+  },
+  {
+    id: "get-services",
+    title: "List Services and their endpoints",
+    category: "Services",
+    keywords: ["get", "svc", "endpoints", "ep", "clusterip"],
+    explanation: "A Service with no endpoints selects no ready Pods: compare its selector with the Pod labels.",
+    code: "kubectl get svc\nkubectl get endpoints",
+    language: "bash",
+    simulated: true,
+    relatedChapter: "services",
+  },
+  {
+    id: "pod-ips",
+    title: "Show Pod IPs and nodes",
+    category: "Inspect",
+    keywords: ["get", "wide", "ip", "node"],
+    explanation: "-o wide adds IP and NODE columns. Pod IPs change when Pods are replaced, which is why Services exist.",
+    code: "kubectl get pods -o wide",
+    language: "bash",
+    simulated: true,
+    relatedChapter: "services",
+  },
+  {
+    id: "service-yaml",
+    title: "Service manifest",
+    category: "Services",
+    keywords: ["service", "yaml", "selector", "port", "targetport"],
+    explanation: "port is what clients use; targetPort is the container port. The selector must match the Pod labels.",
+    code: `apiVersion: v1
+kind: Service
+metadata:
+  name: web
+spec:
+  type: ClusterIP
+  selector:
+    app: web
+  ports:
+    - port: 80
+      targetPort: 80`,
+    language: "yaml",
+    simulated: false,
+    relatedChapter: "services",
+  },
+  {
+    id: "show-labels",
+    title: "Show and filter by labels",
+    category: "Labels",
+    keywords: ["labels", "show-labels", "selector", "-l", "in", "notin"],
+    explanation: "Equality (=, !=) and set-based (in, notin, exists) selectors. Quote set-based ones in a shell.",
+    code: "kubectl get pods --show-labels\nkubectl get pods -l app=web\nkubectl get pods -l 'app in (web,api)'",
+    language: "bash",
+    simulated: true,
+    relatedChapter: "labels",
+  },
+  {
+    id: "label",
+    title: "Add, change, or remove a label",
+    category: "Labels",
+    keywords: ["label", "overwrite", "remove"],
+    explanation: "Changing an existing label needs --overwrite. A trailing minus removes the key.",
+    code: "kubectl label pod toolbox tier=debug\nkubectl label pod toolbox tier=tools --overwrite\nkubectl label pod toolbox tier-",
+    language: "bash",
+    simulated: true,
+    relatedChapter: "labels",
+  },
+  {
+    id: "annotate",
+    title: "Annotate a resource",
+    category: "Labels",
+    keywords: ["annotate", "annotation", "change-cause"],
+    explanation: "Annotations hold notes for people and tools; selectors cannot use them. change-cause shows in rollout history.",
+    code: "kubectl annotate deployment web kubernetes.io/change-cause=\"update to 1.28\"",
+    language: "bash",
+    simulated: true,
+    relatedChapter: "labels",
+  },
+  {
+    id: "rollout-history",
+    title: "Rollout history and rollback to a revision",
+    category: "Deployments",
+    keywords: ["rollout", "history", "undo", "to-revision", "revision"],
+    explanation: "history lists revisions with their change-cause; undo --to-revision picks one, which becomes the newest revision.",
+    code: "kubectl set image deployment/web nginx=nginx:1.28\nkubectl rollout history deployment/web\nkubectl rollout undo deployment/web --to-revision=1",
+    language: "bash",
+    simulated: true,
+    relatedChapter: "rollouts",
+  },
+  {
+    id: "rollout-restart",
+    title: "Restart all Pods of a Deployment",
+    category: "Deployments",
+    keywords: ["rollout", "restart", "pause", "resume"],
+    explanation: "restart replaces Pods with a rolling update, for example to pick up changed ConfigMap env values. pause and resume batch several changes into one rollout.",
+    code: "kubectl rollout restart deployment/web\nkubectl rollout pause deployment/web\nkubectl rollout resume deployment/web",
+    language: "bash",
+    simulated: true,
+    relatedChapter: "rollouts",
+  },
+  {
+    id: "create-configmap",
+    title: "Create a ConfigMap from literals",
+    category: "Configuration",
+    keywords: ["configmap", "cm", "create", "from-literal"],
+    explanation: "Each --from-literal adds one key. Pods read it through env, envFrom, or a volume.",
+    code: "kubectl create configmap app-config --from-literal=LOG_LEVEL=info --from-literal=PORT=8080\nkubectl describe configmap app-config",
+    language: "bash",
+    simulated: true,
+    relatedChapter: "config",
+  },
+  {
+    id: "create-secret",
+    title: "Create a Secret from literals",
+    category: "Configuration",
+    keywords: ["secret", "create", "generic", "base64"],
+    explanation: "Values are stored base64-encoded, which is not encryption. describe shows sizes, not values.",
+    code: "kubectl create secret generic db --from-literal=DB_PASSWORD=s3cr3t\nkubectl get secret db -o yaml",
+    language: "bash",
+    simulated: true,
+    relatedChapter: "config",
+  },
+  {
+    id: "env-from-config",
+    title: "Read config into env vars",
+    category: "Configuration",
+    keywords: ["env", "valuefrom", "envfrom", "configmapkeyref", "secretkeyref", "yaml"],
+    explanation: "One key with valueFrom, or every key with envFrom. A missing object or key leaves the Pod in CreateContainerConfigError.",
+    code: `apiVersion: v1
+kind: Pod
+metadata:
+  name: api
+spec:
+  containers:
+    - name: api
+      image: example/api:1.1
+      env:
+        - name: LOG_LEVEL
+          valueFrom:
+            configMapKeyRef:
+              name: app-config
+              key: LOG_LEVEL
+      envFrom:
+        - secretRef:
+            name: db`,
+    language: "yaml",
+    simulated: false,
+    relatedChapter: "config",
+  },
+  {
+    id: "probes-yaml",
+    title: "Readiness and liveness probes",
+    category: "Configuration",
+    keywords: ["probe", "readiness", "liveness", "startup", "httpget", "yaml"],
+    explanation: "Readiness controls Service traffic; liveness restarts the container. Point both at the port the app listens on.",
+    code: `apiVersion: v1
+kind: Pod
+metadata:
+  name: api
+spec:
+  containers:
+    - name: api
+      image: example/api:1.1
+      ports:
+        - containerPort: 8080
+      readinessProbe:
+        httpGet:
+          path: /ready
+          port: 8080
+        periodSeconds: 5
+      livenessProbe:
+        httpGet:
+          path: /healthz
+          port: 8080
+        failureThreshold: 3`,
+    language: "yaml",
+    simulated: false,
+    relatedChapter: "health-checks",
   },
 ];
