@@ -69,7 +69,7 @@ envFrom:
     prefix: DB_
 ```
 
-Each key becomes a variable with the same name. `prefix` is prepended to every name from that source, so a Secret key `PASSWORD` becomes `DB_PASSWORD`. Keys that are not valid variable names (for example `nginx.conf`) are skipped. If the same name is set by `env` and `envFrom`, the `env` entry wins.
+Each key becomes a variable with the same name. `prefix` is prepended to every name from that source, so a Secret key `PASSWORD` becomes `DB_PASSWORD`. Since Kubernetes 1.34 any key works as a name, even `nginx.conf`, though a program may not be able to read a name with a dot. If the same name is set by `env` and `envFrom`, the `env` entry wins.
 
 ### As files in a volume
 
