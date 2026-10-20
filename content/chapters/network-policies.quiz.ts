@@ -333,4 +333,64 @@ export const quiz: QuizQuestion[] = [
     explanation:
       "Policies apply to new connections. Return traffic on a connection that was allowed is let through, so you write rules for the side that starts the connection.",
   },
+  {
+    id: "netpol-ipblock",
+    topic: "Network Policies",
+    difficulty: "intermediate",
+    question: "api is isolated for egress and must call a payment service outside the cluster at 203.0.113.0/24. Which peer goes in egress[].to?",
+    options: [
+      { id: "a", text: "ipBlock: { cidr: 203.0.113.0/24 }" },
+      { id: "b", text: "namespaceSelector: {}" },
+      { id: "c", text: "podSelector: { matchLabels: { app: payment } }" },
+      { id: "d", text: "No peer is needed; traffic leaving the cluster is never filtered" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "ipBlock picks a CIDR range for traffic to or from outside the cluster. Pod and namespace selectors only match Pods in the cluster, so namespaceSelector: {} does not cover an outside address.",
+  },
+  {
+    id: "netpol-no-ports",
+    topic: "NetworkPolicy YAML",
+    difficulty: "intermediate",
+    question: "An ingress rule on db is { from: [{ podSelector: { matchLabels: { app: api } } }] } with no ports list. What may api reach on db?",
+    options: [
+      { id: "a", text: "Nothing, because a rule needs at least one port" },
+      { id: "b", text: "Only port 80" },
+      { id: "c", text: "Only the port of the db Service" },
+      { id: "d", text: "Every port on the db Pods" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "The ports list limits which destination ports a rule opens. Without it, the rule opens every port to the matching sources. Add ports: [{ protocol: TCP, port: 6379 }] to open only redis.",
+  },
+  {
+    id: "netpol-test-refused",
+    topic: "Network Policies",
+    difficulty: "intermediate",
+    question: "kubectl exec into frontend and wget -T 2 http://api:9090 fails right away with Connection refused. What does that tell you?",
+    options: [
+      { id: "a", text: "The packets reached api but nothing listens on port 9090; a policy is not the cause" },
+      { id: "b", text: "A NetworkPolicy blocked the connection" },
+      { id: "c", text: "The name api could not be resolved" },
+      { id: "d", text: "frontend is isolated for egress with no DNS rule" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "A dropped packet gets no answer, so a policy shows up as a timeout. A refusal means the packets arrived and nothing was listening. A name that does not resolve gives bad address instead.",
+  },
+  {
+    id: "netpol-yaml-deny-both",
+    topic: "NetworkPolicy YAML",
+    difficulty: "intermediate",
+    question: "Which spec blocks both incoming and outgoing traffic for every Pod in the policy's namespace?",
+    options: [
+      { id: "a", text: "podSelector: {}, policyTypes: [Ingress], ingress: [{}]" },
+      { id: "b", text: "podSelector: {}, policyTypes: [Egress], egress: [{}]" },
+      { id: "c", text: "podSelector: {}, with no policyTypes and no rules" },
+      { id: "d", text: "podSelector: {}, policyTypes: [Ingress, Egress], and no ingress or egress sections" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "Listing both types isolates both directions, and with no rules nothing is allowed. ingress: [{}] or egress: [{}] would allow everything in that direction, and leaving out policyTypes with no egress section only isolates ingress.",
+  },
 ];

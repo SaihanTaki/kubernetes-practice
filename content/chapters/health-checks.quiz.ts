@@ -236,9 +236,9 @@ export const quiz: QuizQuestion[] = [
     question: "Which snippet checks that something accepts TCP connections on port 6379?",
     options: [
       { id: "a", text: "tcpSocket: 6379" },
-      { id: "b", text: "tcpSocket:\n  port: 6379" },
-      { id: "c", text: "httpGet:\n  port: 6379\n  protocol: TCP" },
-      { id: "d", text: "exec:\n  port: 6379" },
+      { id: "b", text: "tcpSocket: { port: 6379 }" },
+      { id: "c", text: "httpGet: { port: 6379, protocol: TCP }" },
+      { id: "d", text: "exec: { port: 6379 }" },
     ],
     correctOptionId: "b",
     explanation:
@@ -297,10 +297,10 @@ export const quiz: QuizQuestion[] = [
     question:
       "A Service maps port: 80 to targetPort: 8080, and the app listens on 8080. Which readinessProbe is correct?",
     options: [
-      { id: "a", text: "httpGet:\n  path: /ready\n  port: 80" },
-      { id: "b", text: "httpGet:\n  path: /ready\n  port: 8080" },
-      { id: "c", text: "httpGet:\n  path: /ready\n  service: api" },
-      { id: "d", text: "httpGet:\n  path: api:80/ready" },
+      { id: "a", text: "httpGet: { path: /ready, port: 80 }" },
+      { id: "b", text: "httpGet: { path: /ready, port: 8080 }" },
+      { id: "c", text: "httpGet: { path: /ready, service: api }" },
+      { id: "d", text: "httpGet: { path: api:80/ready }" },
     ],
     correctOptionId: "b",
     explanation:
@@ -335,5 +335,80 @@ export const quiz: QuizQuestion[] = [
     correctOptionId: "d",
     explanation:
       "successThreshold is how many consecutive successes it takes to go from failed back to passing. It is a way to stop a flapping Pod from rejoining the Service on one lucky check.",
+  },
+  {
+    id: "health-checks-no-probes",
+    topic: "Probes",
+    difficulty: "beginner",
+    question: "A container has no readiness probe and no liveness probe. How does Kubernetes treat it?",
+    options: [
+      { id: "a", text: "It counts as ready as soon as it is running, and it is restarted only when its process exits" },
+      { id: "b", text: "It never becomes ready, because a readiness probe is required for Service traffic" },
+      { id: "c", text: "The kubelet adds a default httpGet probe on the first container port" },
+      { id: "d", text: "The API server rejects the Pod" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "Every probe is optional. Without readiness, a running container counts as ready and gets traffic even if the app is still loading. Without liveness, a hung but running process is never restarted. Kubernetes adds no default probe.",
+  },
+  {
+    id: "health-checks-startup-vs-delay",
+    topic: "Probe timing",
+    difficulty: "advanced",
+    question: "An app needs up to 2 minutes to start. Why use a startupProbe instead of initialDelaySeconds: 120 on the livenessProbe?",
+    options: [
+      { id: "a", text: "initialDelaySeconds is ignored on liveness probes" },
+      { id: "b", text: "The delay applies after every restart and waits the full 120 seconds even when the app is up sooner, so hangs during that time go undetected" },
+      { id: "c", text: "A startupProbe also makes the image pull faster" },
+      { id: "d", text: "initialDelaySeconds cannot be larger than periodSeconds" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "A startup probe passes as soon as the app is up, then liveness takes over. A large initialDelaySeconds always waits the full time after each container start, so a hang in that window goes unnoticed. initialDelaySeconds does work on liveness and has no such upper limit.",
+  },
+  {
+    id: "health-checks-same-endpoint",
+    topic: "Probes",
+    difficulty: "intermediate",
+    question: "Readiness and liveness both call /healthz with the same settings. The app gets busy and /healthz slows down. What goes wrong?",
+    options: [
+      { id: "a", text: "Nothing; Kubernetes runs only one of the two probes when they match" },
+      { id: "b", text: "The Pod is removed from endpoints and never restarted" },
+      { id: "c", text: "Both probes fail together, so the busy Pod is restarted instead of only being taken out of rotation" },
+      { id: "d", text: "The API server rejects two probes with the same path" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "With identical settings both probes reach failureThreshold at the same time, so the container is killed although it only needed a break from traffic. Use a separate readiness path, or give liveness a higher failureThreshold so readiness reacts first.",
+  },
+  {
+    id: "health-checks-empty-endpoints",
+    topic: "Debugging probes",
+    difficulty: "intermediate",
+    question: "kubectl get endpoints api shows no addresses. Two Pods match the Service's selector and show Running, READY 0/1. Where is the problem?",
+    options: [
+      { id: "a", text: "The Service selector does not match the Pods" },
+      { id: "b", text: "The readiness probe is failing, so the Pods are left out of the endpoints" },
+      { id: "c", text: "The liveness probe is failing" },
+      { id: "d", text: "The Service needs type LoadBalancer to get endpoints" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "Endpoints only list Pods that match the selector and are ready. The Pods match and are running with 0/1, so readiness is the cause, not the selector. A failing liveness probe would show climbing restarts.",
+  },
+  {
+    id: "health-checks-event-timeout",
+    topic: "Debugging probes",
+    difficulty: "intermediate",
+    question: "A probe failure event ends with context deadline exceeded. What does it mean?",
+    options: [
+      { id: "a", text: "The probe path returned 404" },
+      { id: "b", text: "Nothing listens on the probe port" },
+      { id: "c", text: "The app did not answer within timeoutSeconds" },
+      { id: "d", text: "The startup budget has run out" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "context deadline exceeded or Client.Timeout exceeded means the check took longer than timeoutSeconds. A wrong path shows statuscode: 404, and a wrong port shows connection refused.",
   },
 ];

@@ -359,4 +359,124 @@ export const quiz: QuizQuestion[] = [
     explanation:
       "A wildcard covers exactly one DNS label. shop.example.com matches; example.com has no label in its place, and a.b.example.com has two.",
   },
+  {
+    id: "ingress-dns",
+    topic: "Ingress controller",
+    difficulty: "beginner",
+    question: "You add a rule for blog.example.com to an Ingress. What must exist outside Kubernetes for browsers to reach it?",
+    options: [
+      { id: "a", text: "Nothing; the Ingress creates the DNS record when it is applied" },
+      { id: "b", text: "A DNS record for each Pod behind the Service" },
+      { id: "c", text: "A DNS record for blog.example.com that points at the controller's external address" },
+      { id: "d", text: "A separate load balancer for blog.example.com" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "DNS is outside Kubernetes. You point each host name at the controller's address, which all hosts on that controller share. Applying an Ingress does not create DNS records, and clients never address Pods directly.",
+  },
+  {
+    id: "ingress-class-annotation",
+    topic: "IngressClass",
+    difficulty: "beginner",
+    question: "An old guide tells you to add the annotation kubernetes.io/ingress.class: nginx. What should you do in a current cluster?",
+    options: [
+      { id: "a", text: "Set spec.ingressClassName: nginx instead, because the annotation is deprecated" },
+      { id: "b", text: "Use the annotation; it is the only way to pick a controller" },
+      { id: "c", text: "Set both, because the API server requires the annotation and the field together" },
+      { id: "d", text: "Put the annotation on the Service instead of the Ingress" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "The kubernetes.io/ingress.class annotation is deprecated. spec.ingressClassName is the field that names the IngressClass, and the annotation is not required alongside it.",
+  },
+  {
+    id: "ingress-no-host",
+    topic: "Routing",
+    difficulty: "beginner",
+    question: "A rule in spec.rules has paths but no host field. Which requests can it match?",
+    options: [
+      { id: "a", text: "None; a rule without host is ignored" },
+      { id: "b", text: "Requests with any Host header, as long as the path matches" },
+      { id: "c", text: "Only requests sent to the controller's IP with no Host header" },
+      { id: "d", text: "Only requests for the cluster's own DNS name" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "host is optional. Leaving it out makes the rule match every host name, so only the path decides. It is not ignored and does not need an empty Host header.",
+  },
+  {
+    id: "ingress-tls-termination",
+    topic: "TLS",
+    difficulty: "intermediate",
+    question: "An Ingress has a spec.tls entry for shop.example.com. What protocol do the shop Pods receive?",
+    options: [
+      { id: "a", text: "HTTPS, so each Pod also needs the certificate" },
+      { id: "b", text: "Raw TCP with the TLS bytes passed through untouched" },
+      { id: "c", text: "Nothing until the Service type is changed to LoadBalancer" },
+      { id: "d", text: "Plain HTTP, because the controller terminates TLS on port 443" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "The controller decrypts HTTPS with the certificate from the Secret and forwards plain HTTP to the Pods. The Pods do not need the certificate. Passing TLS through untouched is not what spec.tls does.",
+  },
+  {
+    id: "ingress-namespace",
+    topic: "Ingress YAML",
+    difficulty: "intermediate",
+    question: "An Ingress in namespace shop has backend: { service: { name: api, port: { number: 80 } } }. The api Service exists only in namespace backend. What happens?",
+    options: [
+      { id: "a", text: "The controller finds api in any namespace" },
+      { id: "b", text: "The API server rejects the Ingress" },
+      { id: "c", text: "The backend is looked up in namespace shop, so the Service is not found and the path fails" },
+      { id: "d", text: "Kubernetes copies the Service into namespace shop" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "An Ingress only routes to Services in its own namespace. The API server does not check the backend, so it applies, but the controller cannot find api in shop and that path returns an error such as 503.",
+  },
+  {
+    id: "ingress-named-port",
+    topic: "Ingress YAML",
+    difficulty: "intermediate",
+    question: "An Ingress backend uses port: { name: http }. What must be true for it to work?",
+    options: [
+      { id: "a", text: "The container must listen on port 80" },
+      { id: "b", text: "The Ingress must also set port.number" },
+      { id: "c", text: "The IngressClass must be named http" },
+      { id: "d", text: "The backend Service must have a port named http" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "port.name refers to a named port on the Service, just as port.number refers to the Service's port number. You set one or the other, not both, and the container port number does not matter here.",
+  },
+  {
+    id: "ingress-rewrite-target",
+    topic: "Annotations",
+    difficulty: "advanced",
+    question: "With ingress-nginx, path /api(/|$)(.*) and annotation nginx.ingress.kubernetes.io/rewrite-target: /$2, what path does the Pod see for GET /api/orders?",
+    options: [
+      { id: "a", text: "/orders" },
+      { id: "b", text: "/api/orders" },
+      { id: "c", text: "/$2" },
+      { id: "d", text: "/api" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "rewrite-target makes ingress-nginx treat the path as a regular expression. $2 is the second capture group, orders, so /api is stripped and the Pod gets /orders. Without the annotation the Pod would see /api/orders.",
+  },
+  {
+    id: "ingress-gateway-roles",
+    topic: "Gateway API",
+    difficulty: "intermediate",
+    question: "In Gateway API, which object holds host and path matching to Services, usually owned by an app team?",
+    options: [
+      { id: "a", text: "GatewayClass" },
+      { id: "b", text: "HTTPRoute" },
+      { id: "c", text: "Gateway" },
+      { id: "d", text: "IngressClass" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "HTTPRoute matches hosts and paths (and headers, or weights) to Services. Gateway is the listener with ports and certificates, usually owned by the platform team, and GatewayClass names the controller, like IngressClass does for Ingress.",
+  },
 ];
