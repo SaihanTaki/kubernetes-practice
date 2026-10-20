@@ -391,4 +391,184 @@ export const quiz: QuizQuestion[] = [
     explanation:
       "--as sends impersonation headers, and the API server checks that the real caller may impersonate that identity. That is why impersonate is a dangerous permission to hand out.",
   },
+  {
+    id: "rbac-masters",
+    topic: "Authentication",
+    difficulty: "advanced",
+    question: "A client certificate in group system:masters leaks. Why does deleting RoleBindings not help?",
+    options: [
+      { id: "a", text: "system:masters bypasses RBAC entirely, so the certificate stays all-powerful until it expires" },
+      { id: "b", text: "RoleBindings for system:masters are recreated by the API server" },
+      { id: "c", text: "It does help; deleting the ClusterRoleBinding for cluster-admin revokes it" },
+      { id: "d", text: "Certificates are checked only once, when kubectl first connects" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "Members of system:masters skip RBAC, so no binding grants or removes their access. Users are not API objects either, so the only fix is at the credential source. Hand out credentials for named users or groups bound to roles instead.",
+  },
+  {
+    id: "rbac-crb-scope",
+    topic: "Bindings",
+    difficulty: "intermediate",
+    question: "You bind the edit ClusterRole to ServiceAccount ci:deployer with a ClusterRoleBinding. Where can deployer now write objects?",
+    options: [
+      { id: "a", text: "Only in namespace ci, because the ServiceAccount lives there" },
+      { id: "b", text: "Nowhere until you also add a RoleBinding" },
+      { id: "c", text: "In every namespace, including Secrets in each" },
+      { id: "d", text: "Only on cluster-scoped resources" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "A ClusterRoleBinding grants its ClusterRole in every namespace, wherever the subject lives. edit includes Secrets. To limit it to ci, use a RoleBinding in ci instead.",
+  },
+  {
+    id: "rbac-verbs-watch",
+    topic: "Rules",
+    difficulty: "beginner",
+    question: "A Role allows get and list on pods. Which command is refused?",
+    options: [
+      { id: "a", text: "kubectl get pods" },
+      { id: "b", text: "kubectl get pod web-1" },
+      { id: "c", text: "kubectl get pods -o yaml" },
+      { id: "d", text: "kubectl get pods -w" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "get reads one object and list reads a collection, so a, b and c work. -w streams changes, which needs the watch verb, and the Role does not have it.",
+  },
+  {
+    id: "rbac-patch",
+    topic: "Rules",
+    difficulty: "intermediate",
+    question: "A Role allows get and update on deployments in apps. The pipeline runs kubectl set image and gets Forbidden. What is missing?",
+    options: [
+      { id: "a", text: "The create verb" },
+      { id: "b", text: "The patch verb, because set image and apply send a patch rather than a full update" },
+      { id: "c", text: "The deployments/scale subresource" },
+      { id: "d", text: "apiGroups: [\"\"] next to apps" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "update replaces the whole object; patch changes part of it. kubectl set image and kubectl apply send patch requests, so the rule needs patch as well. Deployments are only in apps, so adding the core group changes nothing.",
+  },
+  {
+    id: "rbac-forbidden-read",
+    topic: "Least privilege",
+    difficulty: "intermediate",
+    question: "CI fails with: User \"system:serviceaccount:ci:deployer\" cannot patch resource \"deployments\" in API group \"apps\" in the namespace \"ci\". What is the least-privilege fix?",
+    options: [
+      { id: "a", text: "A ClusterRoleBinding of cluster-admin to the ServiceAccount" },
+      { id: "b", text: "A RoleBinding of the edit ClusterRole in ci" },
+      { id: "c", text: "Add patch on deployments in apiGroups [\"\"] to a ClusterRole" },
+      { id: "d", text: "A Role in ci allowing patch on deployments in group apps, bound to the ServiceAccount with a RoleBinding" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "The message names the verb, resource, API group and namespace, so grant exactly that. cluster-admin hands over the whole cluster, edit adds Secrets and much more, and the core group has no deployments.",
+  },
+  {
+    id: "rbac-create-pods",
+    topic: "Least privilege",
+    difficulty: "advanced",
+    question: "Why is create on pods in a namespace a powerful permission?",
+    options: [
+      { id: "a", text: "The new Pod can mount any Secret in the namespace and run as any ServiceAccount there, inheriting its permissions" },
+      { id: "b", text: "It also allows creating Pods in every other namespace" },
+      { id: "c", text: "It includes pods/exec on all existing Pods" },
+      { id: "d", text: "It is not; create on pods only starts containers" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "A Pod spec can name any Secret volume and any serviceAccountName in its namespace. Whoever can create Pods can read those Secrets and act as those ServiceAccounts. It stays within the namespace and does not grant exec.",
+  },
+  {
+    id: "rbac-default-binding",
+    topic: "ServiceAccounts",
+    difficulty: "intermediate",
+    question: "One app in namespace shop needs to list ConfigMaps. Why not bind that Role to the default ServiceAccount?",
+    options: [
+      { id: "a", text: "The default ServiceAccount cannot be a binding subject" },
+      { id: "b", text: "Every Pod in shop that does not set serviceAccountName would get the permission too" },
+      { id: "c", text: "The default ServiceAccount has no token" },
+      { id: "d", text: "Roles cannot grant access to ConfigMaps" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "Pods run as default unless they name another account, so a grant to default reaches all of them. Give the app its own ServiceAccount and set spec.serviceAccountName.",
+  },
+  {
+    id: "rbac-sa-groups",
+    topic: "ServiceAccounts",
+    difficulty: "advanced",
+    question: "A RoleBinding in namespace ci has subject {kind: Group, name: system:serviceaccounts:ci}. Who gets the role?",
+    options: [
+      { id: "a", text: "Only the ServiceAccount named ci" },
+      { id: "b", text: "Every ServiceAccount in the cluster" },
+      { id: "c", text: "Every ServiceAccount in namespace ci" },
+      { id: "d", text: "No one; ServiceAccounts cannot be in groups" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "Each ServiceAccount is in system:serviceaccounts (all of them) and system:serviceaccounts:<namespace>. The second group covers every account in ci.",
+  },
+  {
+    id: "rbac-sa-namespace",
+    topic: "ServiceAccounts",
+    difficulty: "intermediate",
+    question: "A Pod in namespace web sets serviceAccountName: deployer, but deployer exists only in namespace ci. What happens?",
+    options: [
+      { id: "a", text: "The Pod is not created, because a Pod can only use a ServiceAccount from its own namespace" },
+      { id: "b", text: "The Pod runs as ci:deployer" },
+      { id: "c", text: "The Pod runs as default" },
+      { id: "d", text: "The Pod runs with no identity" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "ServiceAccounts are namespaced and serviceAccountName is looked up in the Pod's own namespace. When it does not exist there, the Pod is rejected. It never falls back to default or reaches into another namespace.",
+  },
+  {
+    id: "rbac-create-token",
+    topic: "ServiceAccounts",
+    difficulty: "intermediate",
+    question: "A pipeline outside the cluster needs a token for ServiceAccount deployer in ci. What is the current way to get one?",
+    options: [
+      { id: "a", text: "Read the token Secret created automatically for the ServiceAccount" },
+      { id: "b", text: "Copy the client certificate from your kubeconfig" },
+      { id: "c", text: "kubectl describe serviceaccount deployer -n ci" },
+      { id: "d", text: "kubectl create token deployer -n ci, which issues a short-lived token" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "Since 1.24 no long-lived token Secret is created per ServiceAccount. kubectl create token asks the TokenRequest API for a short-lived one. Your kubeconfig certificate would run the pipeline as you, not as deployer.",
+  },
+  {
+    id: "rbac-create-role-cmd",
+    topic: "Roles",
+    difficulty: "intermediate",
+    question: "You run kubectl create role r --verb=get,update --resource=pods,deployments.apps -n ci. What does the Role allow?",
+    options: [
+      { id: "a", text: "get on pods and update on deployments only" },
+      { id: "b", text: "get and update on both pods and deployments, because the command applies every verb to every resource" },
+      { id: "c", text: "Nothing; deployments.apps is not a valid resource name" },
+      { id: "d", text: "get and update on pods only; deployments needs a second command" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "kubectl create role grants every listed verb on every listed resource, and deployments.apps is resource.group, which sets apiGroups apps. To give different verbs per resource, write YAML or create two Roles.",
+  },
+  {
+    id: "rbac-aggregation",
+    topic: "Roles",
+    difficulty: "advanced",
+    question: "You install a CRD and want users bound to the view ClusterRole to read its objects. How?",
+    options: [
+      { id: "a", text: "Edit the view ClusterRole by hand" },
+      { id: "b", text: "Nothing; view covers every resource automatically" },
+      { id: "c", text: "Create a ClusterRole with read rules for the CRD and the label rbac.authorization.k8s.io/aggregate-to-view: \"true\"" },
+      { id: "d", text: "Create a RoleBinding from view to the CRD" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "view, edit and admin are aggregated: they collect rules from ClusterRoles carrying the matching aggregate-to label. Hand edits to view are overwritten by the aggregation, and a binding points at subjects, not resources.",
+  },
 ];
