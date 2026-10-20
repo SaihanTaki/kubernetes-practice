@@ -1,0 +1,158 @@
+import { Callout } from "@/components/Callout";
+import { Diagram } from "@/components/Diagram";
+import { Lab } from "@/components/Lab";
+import { Quiz } from "@/components/Quiz";
+import { YamlWalkthrough } from "@/components/YamlWalkthrough";
+
+## Why Kubernetes needs to ask
+
+Without probes, the kubelet knows only whether a container's process is running. A process can be running and still useless: deadlocked, stuck in a retry loop, or still loading data. A **probe** is a check the kubelet runs against a container on a schedule, so Kubernetes can act on whether the app actually works.
+
+## Three probes, three jobs
+
+Each probe answers a different question and triggers a different action:
+
+| Probe | Question | When it fails |
+| --- | --- | --- |
+| `startupProbe` | Has the app finished starting? | Liveness and readiness are held off. After `failureThreshold` failures the container is restarted. |
+| `readinessProbe` | Should this Pod get traffic right now? | The Pod is marked not ready and removed from Service endpoints. Nothing restarts. |
+| `livenessProbe` | Is this process stuck beyond recovery? | The kubelet kills the container and restarts it in the same Pod. |
+
+Readiness is about **traffic**, liveness is about **restarts**, and startup exists to **delay the other two** for apps that boot slowly. Every probe is optional. A container without a readiness probe counts as ready as soon as it is running; one without a liveness probe is only restarted when its process exits.
+
+Step through a Pod starting up to see when each probe runs:
+
+<Diagram id="probe-timeline" />
+
+## Handler types
+
+Each probe uses exactly one handler to perform the check:
+
+- **`httpGet`**: sends an HTTP GET to `path` on `port` at the Pod IP. A status code from 200 to 399 passes; anything else, a timeout, or a refused connection fails.
+- **`tcpSocket`**: tries to open a TCP connection to `port`. It passes if the connection opens. Use it for things that do not speak HTTP, such as Redis on 6379.
+- **`exec`**: runs `command` inside the container. Exit status 0 passes; anything else fails. Output is ignored.
+- **`grpc`**: calls the standard gRPC Health Checking Protocol (`grpc.health.v1.Health`) on `port`. The app must implement that service.
+
+```yaml
+readinessProbe:
+  tcpSocket:
+    port: 6379
+livenessProbe:
+  exec:
+    command: ["redis-cli", "ping"]
+```
+
+The kubelet runs the check from the node, straight to the container. It does not go through a Service, so `port` is always a port the container listens on.
+
+## Timing fields
+
+Five fields control how often a probe runs and how quickly it reacts. The defaults apply when you leave a field out:
+
+| Field | Default | Meaning |
+| --- | --- | --- |
+| `initialDelaySeconds` | 0 | Wait this long after the container starts before the first check. |
+| `periodSeconds` | 10 | Time between checks. |
+| `timeoutSeconds` | 1 | How long one check may take before it counts as a failure. |
+| `failureThreshold` | 3 | Failures in a row before the probe is considered failed. |
+| `successThreshold` | 1 | Passes in a row, after failing, before it is considered passing again. Must be 1 for liveness and startup. |
+
+### Worked example: how long until a restart
+
+Take a liveness probe with `periodSeconds: 10`, `timeoutSeconds: 2`, and `failureThreshold: 3`. A check passes at t = 0s, and the app hangs at t = 1s.
+
+1. t = 10s: a check starts, gets no answer, and times out at t = 12s. Failure 1.
+2. t = 20s: same again, failure 2 at t = 22s.
+3. t = 30s: failure 3 at t = 32s. The threshold is reached and the kubelet kills the container.
+
+So a hang leads to a restart after roughly `failureThreshold × periodSeconds`, here about 30 seconds, plus up to one timeout. The container then gets its normal termination grace period, and if it keeps failing, the kubelet waits longer between restarts each time (`CrashLoopBackOff`).
+
+The same arithmetic sets the startup budget: a startup probe with `periodSeconds: 5` and `failureThreshold: 24` gives the app 120 seconds to start. Prefer that over a large `initialDelaySeconds` on liveness, which also delays detection of a hang on every restart.
+
+## Readiness, Services, and rolling updates
+
+A Service sends traffic to the endpoints behind it: the Pods that match its selector **and** are ready. When a Pod fails readiness, its IP is removed from the endpoints. The Pod keeps running, and when readiness passes again it is added back.
+
+<Diagram id="probe-readiness-service" />
+
+Rolling updates use the same signal. A Deployment counts a new Pod as available only once it is ready, and it removes old Pods only as new ones become available. If the new version never passes readiness, the rollout stalls with the old Pods still serving. That is the protection: a broken release does not take down traffic. Kubernetes does not roll back by itself, though; you run `kubectl rollout undo` or fix the template.
+
+## The manifest
+
+A Deployment for `example/api:1.1`, which serves HTTP on 8080 with paths `/`, `/healthz`, and `/ready`, with all three probes:
+
+<YamlWalkthrough id="health-checks-deployment" />
+
+Readiness is tighter than liveness here on purpose. A struggling Pod drops out of the Service after about 10 seconds, well before liveness would restart it after about 30. Often it recovers without a restart at all.
+
+## Common mistakes
+
+<Callout title="Common mistake: liveness that checks dependencies">
+  If `/healthz` fails when the database is unreachable, a database outage makes every replica fail liveness at the same
+  time. All of them restart, repeatedly, and restarting cannot fix the database. Liveness should check only this
+  process. Put dependency checks in readiness, if anywhere.
+</Callout>
+
+<Callout title="Common mistake: the same endpoint for readiness and liveness">
+  If both probes hit the same path with the same settings, a Pod that is only busy is restarted instead of being taken
+  out of rotation. Use a separate readiness path, or at least give liveness a higher `failureThreshold` so readiness
+  reacts first.
+</Callout>
+
+<Callout title="Common mistake: timeouts that are too short">
+  `timeoutSeconds` defaults to 1. An endpoint that slows down under load then fails liveness and gets restarted exactly
+  when it is busiest, which pushes more load onto the remaining Pods. Set a timeout that matches the endpoint's real
+  worst case.
+</Callout>
+
+<Callout title="Common mistake: the wrong port">
+  The probe talks to the container, not the Service. If a Service maps port 80 to targetPort 8080, the probe must use
+  8080. Probing 80 gives "connection refused" and the Pod never becomes ready.
+</Callout>
+
+## Debugging a failing probe
+
+Start with `kubectl get pods`. The columns already narrow it down:
+
+```text
+NAME                   READY   STATUS             RESTARTS   AGE
+api-6d4cf56db6-7xkqp   0/1     Running            0          4m
+api-6d4cf56db6-p2mzn   0/1     CrashLoopBackOff   5          4m
+```
+
+- `Running`, `0/1`, no restarts: readiness is failing.
+- Restarts climbing, `CrashLoopBackOff`: liveness or startup is failing, or the app itself crashes.
+
+Then run `kubectl describe pod <name>`. It lists each probe's settings and, under Events, every failed check with its error:
+
+```text
+    Liveness:   http-get http://:8080/health delay=0s timeout=1s period=10s #success=1 #failure=3
+    Readiness:  http-get http://:80/ready delay=0s timeout=1s period=5s #success=1 #failure=3
+...
+Events:
+  Type     Reason     Age                From     Message
+  ----     ------     ----               ----     -------
+  Warning  Unhealthy  2m (x24 over 4m)   kubelet  Readiness probe failed: Get "http://10.244.1.7:80/ready": dial tcp 10.244.1.7:80: connect: connection refused
+  Warning  Unhealthy  1m (x9 over 4m)    kubelet  Liveness probe failed: HTTP probe failed with statuscode: 404
+  Normal   Killing    1m (x3 over 4m)    kubelet  Container api failed liveness probe, will be restarted
+```
+
+Read the message, not just the reason:
+
+- `statuscode: 404`: the kubelet reached the app, but the path is wrong.
+- `statuscode: 500` or `503`: the path exists and the app reports itself unhealthy.
+- `connection refused`: nothing listens on that port. Usually the wrong port, or the app has not bound it yet.
+- `context deadline exceeded` or `Client.Timeout exceeded`: the app answered too slowly for `timeoutSeconds`.
+
+Finally, `kubectl get endpoints <service>` shows whether any ready Pods are behind the Service. An empty list with matching Pods running means readiness is the problem, not the selector.
+
+## Practice
+
+The api Deployment and its Service are already applied, and both are broken by their probes. Diagnose them, fix `api.yaml`, and apply it. The simulator checks probes against what the image serves; it does not model the timing fields, so each command moves the Pods one step.
+
+<Lab id="health-checks-fix-probes" />
+
+## Check yourself
+
+<Quiz id="health-checks" />
+
+Commands from this chapter are collected in the [cheatsheet](/cheatsheet).

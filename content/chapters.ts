@@ -10,6 +10,7 @@ import { data as services } from "./chapters/services.data";
 import { data as labels } from "./chapters/labels.data";
 import { data as rollouts } from "./chapters/rollouts.data";
 import { data as config } from "./chapters/config.data";
+import { data as healthChecks } from "./chapters/health-checks.data";
 import type { ChapterData, Difficulty } from "./types";
 
 export type Chapter = {
@@ -132,6 +133,15 @@ export const chapters: Chapter[] = [
     difficulty: "beginner",
     ready: true,
     data: config,
+  },
+  {
+    slug: "health-checks",
+    section: "Configuration",
+    title: "Health Checks: Probes",
+    summary: "Tell Kubernetes when a container is started, ready for traffic, or stuck and in need of a restart.",
+    difficulty: "intermediate",
+    ready: true,
+    data: healthChecks,
   },
 ];
 
