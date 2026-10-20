@@ -331,4 +331,94 @@ export const quiz: QuizQuestion[] = [
     explanation:
       "Declarative means the file describes the desired state and kubectl apply makes the cluster match it. The other commands are imperative: each one performs a single action.",
   },
+  {
+    id: "intro-delete-ownership",
+    topic: "Objects",
+    difficulty: "intermediate",
+    question: "A Deployment web owns a ReplicaSet and three Pods, and a Service web selects those Pods by label. You delete the Deployment. What is removed?",
+    options: [
+      { id: "a", text: "Only the Deployment; the ReplicaSet and Pods keep running" },
+      { id: "b", text: "The ReplicaSet and its Pods, but not the Service" },
+      { id: "c", text: "The ReplicaSet, the Pods, and the Service" },
+      { id: "d", text: "Nothing until you also delete the Pods by hand" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "Ownership cascades: the Deployment owns the ReplicaSet, which owns the Pods, so they are deleted with it. The Service only selects Pods by label and is not owned by the Deployment, so it stays, with no Pods to send traffic to.",
+  },
+  {
+    id: "intro-server-metadata",
+    topic: "YAML: metadata",
+    difficulty: "intermediate",
+    question: "kubectl get deployment web -o yaml shows metadata fields you never wrote, such as uid, resourceVersion, and creationTimestamp. Where do they come from?",
+    options: [
+      { id: "a", text: "kubectl adds them before it sends the file" },
+      { id: "b", text: "You must write them, or the next apply fails" },
+      { id: "c", text: "They are copied from the container image" },
+      { id: "d", text: "The API server sets them when it stores the object, and resourceVersion changes on every update" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "These are server-set metadata fields, added by the API server when the object is stored. You do not put them in your manifest. kubectl only sends what is in your file.",
+  },
+  {
+    id: "intro-api-resources",
+    topic: "API versions",
+    difficulty: "beginner",
+    question: "On a real cluster, which command lists every kind with its group/version and whether it is namespaced?",
+    options: [
+      { id: "a", text: "kubectl explain deployment" },
+      { id: "b", text: "kubectl api-resources" },
+      { id: "c", text: "kubectl get all" },
+      { id: "d", text: "kubectl version" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "kubectl api-resources lists the kinds the cluster serves, their apiVersion, and whether each is namespaced. kubectl explain describes the fields of one kind, and kubectl get lists objects, not kinds.",
+  },
+  {
+    id: "intro-name-per-namespace",
+    topic: "Objects",
+    difficulty: "intermediate",
+    question: "Two teams each want a Deployment named web in the same cluster. When does that work?",
+    options: [
+      { id: "a", text: "Never, because every object name is unique across the whole cluster" },
+      { id: "b", text: "Only if the two Deployments use different images" },
+      { id: "c", text: "Only if one of them is created as a Pod instead" },
+      { id: "d", text: "When they are in different namespaces, because Deployments are namespaced" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "A name must be unique among objects of the same kind in one namespace. Deployment is namespaced, so web can exist once per namespace. Cluster-scoped kinds such as Node have one name across the whole cluster.",
+  },
+  {
+    id: "intro-declarative-change",
+    topic: "Workflow",
+    difficulty: "beginner",
+    question: "Your Deployment is described in web.yaml, kept in Git. You want 5 replicas instead of 3, the declarative way. What do you do?",
+    options: [
+      { id: "a", text: "Change replicas to 5 in web.yaml and run kubectl apply -f web.yaml again" },
+      { id: "b", text: "Run kubectl scale deployment web --replicas=5 and leave the file alone" },
+      { id: "c", text: "Delete the Deployment and recreate it with kubectl create deployment" },
+      { id: "d", text: "Add replicas: 5 to the Deployment's status section" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "Declarative means the file is the source of truth: edit it and apply it again, and Kubernetes works out what changed. kubectl scale is imperative and leaves the file saying 3, and status is never written by you.",
+  },
+  {
+    id: "intro-imperative-drawback",
+    topic: "Workflow",
+    difficulty: "intermediate",
+    question: "What is the main drawback of making lasting changes only with imperative commands such as kubectl scale?",
+    options: [
+      { id: "a", text: "Imperative commands take longer to reach the cluster" },
+      { id: "b", text: "The API server rejects imperative changes to Deployments" },
+      { id: "c", text: "No file records the change, so the cluster is the only record of what you did" },
+      { id: "d", text: "Imperative commands only work on Pods" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "Imperative commands are fine for experiments and quick fixes, and they end with the same objects as a manifest would. But nothing outside the cluster records them, which is why teams keep manifests in Git for anything that lasts.",
+  },
 ];
