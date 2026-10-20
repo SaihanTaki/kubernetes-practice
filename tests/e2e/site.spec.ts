@@ -55,15 +55,15 @@ test("architecture diagram walkthrough and details", async ({ page }) => {
   // The page has several diagrams; this one is the only one with worker node groups.
   const d = page.getByRole("group", { name: "Worker node 1" }).locator("xpath=ancestor::div[contains(@class,'my-6')][1]");
   await d.getByRole("button", { name: "Start walkthrough" }).click();
-  await expect(d.getByText("Step 1 of 8")).toBeVisible();
+  await expect(d.getByText("Step 1 of 6")).toBeVisible();
   const prev = d.getByRole("button", { name: "Previous step" });
   const next = d.getByRole("button", { name: "Next step" });
   await expect(prev).toBeDisabled();
   await next.click();
-  await expect(d.getByText("Step 2 of 8")).toBeVisible();
+  await expect(d.getByText("Step 2 of 6")).toBeVisible();
   await expect(prev).toBeEnabled();
-  for (let i = 2; i < 8; i++) await next.click();
-  await expect(d.getByText("Step 8 of 8")).toBeVisible();
+  for (let i = 2; i < 6; i++) await next.click();
+  await expect(d.getByText("Step 6 of 6")).toBeVisible();
   await expect(next).toBeDisabled();
   await d.getByRole("button", { name: "Show all" }).click();
   await expect(d.getByRole("button", { name: "Start walkthrough" })).toBeVisible();
