@@ -1,7 +1,8 @@
 import { find, isFinished, list, matches } from "./cluster";
 import { recordEvent } from "./events";
 import { parseCpu, parseMemory } from "./quantity";
-import type { Cluster, LabelSelector, Labels, MatchExpression, Node, NodeSelectorTerm, Pod, Taint, Toleration } from "./types";
+import { bindForPod, claimProblem, volumeNodeConflict } from "./storage";
+import type { Cluster, LabelSelector, Labels, MatchExpression, Node, NodeSelectorTerm, Pod, PodSpec, Taint, Toleration } from "./types";
 
 export const UNSCHEDULABLE_TAINT = "node.kubernetes.io/unschedulable";
 
@@ -51,18 +52,25 @@ const taintText = (t: Taint) => `{${t.key}: ${t.value ?? ""}}`;
 /** Resource failures leave room for preemption; everything else cannot be fixed by evicting Pods. */
 const RESOURCE_REASONS = ["Insufficient cpu", "Insufficient memory", "Too many pods"];
 
+/** Why cordon, taints, nodeSelector or required node affinity rule the node out for this spec, or null. */
+export function nodeMismatch(spec: PodSpec | undefined, n: Node): string | null {
+  const tolerations = spec?.tolerations;
+  if (n.unschedulable && !tolerates(tolerations, { key: UNSCHEDULABLE_TAINT, effect: "NoSchedule" })) return "node(s) were unschedulable";
+  const taint = n.taints.find((t) => t.effect !== "PreferNoSchedule" && !tolerates(tolerations, t));
+  if (taint) return `node(s) had untolerated taint ${taintText(taint)}`;
+  const labels = n.metadata.labels;
+  const terms = spec?.affinity?.nodeAffinity?.requiredDuringSchedulingIgnoredDuringExecution?.nodeSelectorTerms;
+  if (!matches(labels, spec?.nodeSelector ?? {}) || (terms && !terms.some((t) => termMatches(labels, t)))) {
+    return "node(s) didn't match Pod's node affinity/selector";
+  }
+  return null;
+}
+
 /** Why the Pod cannot run on the node, as the scheduler's filter plugins report it (first failing plugin). */
 function filter(c: Cluster, p: Pod, n: Node): string[] {
-  const tolerations = p.spec?.tolerations;
-  if (n.unschedulable && !tolerates(tolerations, { key: UNSCHEDULABLE_TAINT, effect: "NoSchedule" })) return ["node(s) were unschedulable"];
-  const taint = n.taints.find((t) => t.effect !== "PreferNoSchedule" && !tolerates(tolerations, t));
-  if (taint) return [`node(s) had untolerated taint ${taintText(taint)}`];
-
-  const labels = n.metadata.labels;
-  const terms = p.spec?.affinity?.nodeAffinity?.requiredDuringSchedulingIgnoredDuringExecution?.nodeSelectorTerms;
-  if (!matches(labels, p.spec?.nodeSelector ?? {}) || (terms && !terms.some((t) => termMatches(labels, t)))) {
-    return ["node(s) didn't match Pod's node affinity/selector"];
-  }
+  const mismatch = nodeMismatch(p.spec, n);
+  if (mismatch) return [mismatch];
+  if (volumeNodeConflict(c, p, n)) return ["node(s) had volume node affinity conflict"];
 
   const others = podsOnNode(c, n.metadata.name).filter((q) => q !== p);
   const want = podRequests(p);
@@ -108,6 +116,8 @@ const counted = (reasons: string[]) => {
 /** Picks a node for the Pod, or returns the FailedScheduling message. */
 export function place(c: Cluster, p: Pod): Node | string {
   const nodes = list(c, "Node");
+  const blocked = claimProblem(c, p);
+  if (blocked) return `0/${nodes.length} nodes are available: ${blocked}. preemption: 0/${nodes.length} nodes are available: ${nodes.length} Preemption is not helpful for scheduling.`;
   const results = nodes.map((n) => ({ n, reasons: filter(c, p, n) }));
   const feasible = results.filter((r) => !r.reasons.length).map((r) => r.n);
   if (feasible.length) {
@@ -126,7 +136,7 @@ export function schedule(c: Cluster) {
     const wanted = p.spec?.nodeName;
     if (wanted) {
       // spec.nodeName skips the scheduler; the Pod waits if that node does not exist.
-      if (find(c, "Node", "", wanted)) bind(p, wanted);
+      if (find(c, "Node", "", wanted)) bind(c, p, wanted);
       continue;
     }
     const result = place(c, p);
@@ -134,14 +144,15 @@ export function schedule(c: Cluster) {
       p.status = "Pending";
       recordEvent(c, p, "Warning", "FailedScheduling", result, "default-scheduler");
     } else {
-      bind(p, result.metadata.name);
+      bind(c, p, result.metadata.name);
       recordEvent(c, p, "Normal", "Scheduled", `Successfully assigned ${p.metadata.namespace}/${p.metadata.name} to ${result.metadata.name}`, "default-scheduler");
     }
   }
 }
 
-function bind(p: Pod, node: string) {
+function bind(c: Cluster, p: Pod, node: string) {
   p.node = node;
+  bindForPod(c, p, node);
   if (p.status === "Pending") p.status = "ContainerCreating";
 }
 

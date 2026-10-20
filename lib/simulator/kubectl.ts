@@ -43,17 +43,49 @@ import {
   settle,
   workerNode,
 } from "./cluster";
+import {
+  CRONJOB_HEADER,
+  cronJobManifest,
+  cronJobRow,
+  describeCronJob,
+  describeJob,
+  JOB_HEADER,
+  jobManifest,
+  jobRow,
+  newJob,
+  parseCron,
+  validTimeZone,
+} from "./batch";
 import { eventsOf } from "./events";
+import { exec } from "./exec";
 import { timestamp } from "./images";
 import { cordon, describeNode, drain, NODE_HEADER, NODE_WIDE_HEADER, nodeManifest, nodeRow, taint } from "./nodes";
 import { getEvents, kubeletEvents, logs, top } from "./observe";
+import { containerLines, volumeLines } from "./podtext";
+import {
+  DAEMONSET_HEADER,
+  daemonSetManifest,
+  daemonSetRow,
+  describeDaemonSet,
+  describeStatefulSet,
+  setRolloutStatus,
+  STATEFULSET_HEADER,
+  statefulSetManifest,
+  statefulSetRow,
+} from "./sets";
+import { claimClass, deleteClaim, deleteVolume, describeStorage, STORAGE_HEADERS, storageManifest, storageRow } from "./storage";
+import { parseMemory } from "./quantity";
 import type {
   Cluster,
   Container,
+  DaemonSet,
   Deployment,
+  Job,
+  JobSpec,
   Kind,
   Labels,
   Node,
+  PersistentVolumeClaim,
   Pod,
   PodSpec,
   PodTemplate,
@@ -66,6 +98,9 @@ import type {
   Service,
   ServicePort,
   ServiceType,
+  StatefulSet,
+  StorageClass,
+  PersistentVolume,
 } from "./types";
 
 type Manifest = z.infer<typeof manifestSchema>;
@@ -85,22 +120,36 @@ const TYPES: Record<string, ResourceType> = {
   limits: "LimitRange", limitrange: "LimitRange", limitranges: "LimitRange",
   quota: "ResourceQuota", resourcequota: "ResourceQuota", resourcequotas: "ResourceQuota",
   ev: "Event", event: "Event", events: "Event",
+  job: "Job", jobs: "Job",
+  cj: "CronJob", cronjob: "CronJob", cronjobs: "CronJob",
+  ds: "DaemonSet", daemonset: "DaemonSet", daemonsets: "DaemonSet",
+  sts: "StatefulSet", statefulset: "StatefulSet", statefulsets: "StatefulSet",
+  pv: "PersistentVolume", persistentvolume: "PersistentVolume", persistentvolumes: "PersistentVolume",
+  pvc: "PersistentVolumeClaim", persistentvolumeclaim: "PersistentVolumeClaim", persistentvolumeclaims: "PersistentVolumeClaim",
+  sc: "StorageClass", storageclass: "StorageClass", storageclasses: "StorageClass",
 };
 
 const PLURAL: Record<ResourceType, string> = {
   Pod: "pods", ReplicaSet: "replicasets", Deployment: "deployments", Namespace: "namespaces", Node: "nodes",
   Service: "services", Endpoints: "endpoints", ConfigMap: "configmaps", Secret: "secrets",
   LimitRange: "limitranges", ResourceQuota: "resourcequotas", Event: "events",
+  Job: "jobs", CronJob: "cronjobs", DaemonSet: "daemonsets", StatefulSet: "statefulsets",
+  PersistentVolume: "persistentvolumes", PersistentVolumeClaim: "persistentvolumeclaims", StorageClass: "storageclasses",
 };
 
 const GROUP: Record<ResourceType, string> = {
   Pod: "pod", ReplicaSet: "replicaset.apps", Deployment: "deployment.apps", Namespace: "namespace", Node: "node",
   Service: "service", Endpoints: "endpoints", ConfigMap: "configmap", Secret: "secret",
   LimitRange: "limitrange", ResourceQuota: "resourcequota", Event: "event",
+  Job: "job.batch", CronJob: "cronjob.batch", DaemonSet: "daemonset.apps", StatefulSet: "statefulset.apps",
+  PersistentVolume: "persistentvolume", PersistentVolumeClaim: "persistentvolumeclaim", StorageClass: "storageclass.storage.k8s.io",
 };
 
-/** `deployments.apps`, `pods`: the resource name the API uses in errors. */
-const apiName = (type: ResourceType) => (GROUP[type].endsWith(".apps") ? `${PLURAL[type]}.apps` : PLURAL[type]);
+/** `deployments.apps`, `jobs.batch`, `pods`: the resource name the API uses in errors. */
+const apiName = (type: ResourceType) => {
+  const dot = GROUP[type].indexOf(".");
+  return dot === -1 ? PLURAL[type] : `${PLURAL[type]}${GROUP[type].slice(dot)}`;
+};
 
 /** The namespace a command acts in: "" for cluster-scoped kinds, which ignore -n. */
 const nsOf = (type: ResourceType, p: Parsed) => (CLUSTER_SCOPED.has(type) ? "" : p.namespace);
@@ -122,11 +171,16 @@ Supported commands:
   kubectl get <type> [name]
       types: pods, replicasets, deployments, services (svc), endpoints (ep),
              configmaps (cm), secrets, namespaces, nodes (no),
-             limitranges (limits), resourcequotas (quota), events (ev)
+             limitranges (limits), resourcequotas (quota), events (ev),
+             jobs, cronjobs (cj), daemonsets (ds), statefulsets (sts),
+             persistentvolumes (pv), persistentvolumeclaims (pvc),
+             storageclasses (sc)
   kubectl get events [--field-selector involvedObject.name=<name>]
-  kubectl describe <pod|replicaset|deployment|service|configmap|secret|node|
-                    limitrange|resourcequota> <name>
+  kubectl describe <type> <name>   (any type above except endpoints, events, namespaces)
   kubectl create deployment <name> --image=<image> [--replicas=<n>]
+  kubectl create job <name> --image=<image> [-- <command> <args>...]
+  kubectl create job <name> --from=cronjob/<cronjob>
+  kubectl create cronjob <name> --image=<image> --schedule='<cron>' [-- <command> <args>...]
   kubectl create namespace <name>
   kubectl create service <clusterip|nodeport|loadbalancer> <name> --tcp=<port>:<targetPort>
   kubectl create configmap <name> --from-literal=<key>=<value> ...
@@ -136,18 +190,19 @@ Supported commands:
   kubectl expose <deployment|replicaset|pod> <name> --port=<p> [--target-port=<p>]
                  [--type=ClusterIP|NodePort|LoadBalancer] [--name=<service>]
   kubectl set image deployment/<name> <container>=<image>
-  kubectl scale <deployment|replicaset> <name> --replicas=<n>
+  kubectl scale <deployment|replicaset|statefulset> <name> --replicas=<n>
+  kubectl patch cronjob <name> -p '{"spec":{"suspend":true}}'   (or false)
   kubectl label <type> <name> <key>=<value>... [<key>-] [--overwrite]
   kubectl annotate <type> <name> <key>=<value>... [<key>-] [--overwrite]
   kubectl rollout status deployment/<name>
   kubectl rollout history deployment/<name> [--revision=<n>]
   kubectl rollout undo deployment/<name> [--to-revision=<n>]
   kubectl rollout restart deployment/<name>
+  kubectl rollout status|restart daemonset/<name> | statefulset/<name>
   kubectl rollout pause deployment/<name>
   kubectl rollout resume deployment/<name>
   kubectl apply -f <file>
-  kubectl delete <pod|deployment|service|configmap|secret|namespace|node|
-                  limitrange|resourcequota> <name>
+  kubectl delete <type> <name>     (any type above except replicasets, endpoints, events)
   kubectl delete -f <file>
   kubectl taint nodes <node> <key>=<value>:<effect> | <key>:<effect> | <key>:<effect>- | <key>-
       effects: NoSchedule, PreferNoSchedule, NoExecute
@@ -155,8 +210,13 @@ Supported commands:
   kubectl uncordon <node>
   kubectl drain <node> [--ignore-daemonsets] [--force] [--delete-emptydir-data]
   kubectl top nodes|pods [name]
-  kubectl logs <pod|deployment/<name>|replicaset/<name>> [-c <container>]
+  kubectl logs <pod|deployment/<name>|replicaset/<name>|job/<name>|
+               daemonset/<name>|statefulset/<name>> [-c <container>]
                [--previous] [--tail=<n>]
+  kubectl exec <pod|<type>/<name>> [-c <container>] -- <command>
+      commands: cat <file>..., ls [dir], echo <text>,
+                sh -c '<commands separated by ; && ||, with > or >> file>'
+
   ls                       list files
   cat <file>               print a file
   <kubectl command> > <file>
@@ -174,7 +234,12 @@ Supported flags:
   -o, --output yaml|wide   print as YAML, or a table with more columns (get),
                            or YAML together with --dry-run=client
   -f, --filename <file>    manifest file (apply, delete)
-  --image <image>          container image (create deployment, run)
+  --image <image>          container image (create deployment, job, cronjob, run)
+  --schedule <cron>        5-field schedule, e.g. '*/5 * * * *' (create cronjob)
+  --from cronjob/<name>    create a Job from a CronJob's template (create job)
+  -- <command>...          the container command (exec, create job, create cronjob)
+  -p, --patch <json>       the change to make (patch)
+  -i, -t, -it              accepted and ignored (exec)
   --replicas <n>           number of replicas (scale, create deployment)
   --port, --target-port    Service port and the container port it sends to (expose)
   --type <type>            Service type (expose)
@@ -189,14 +254,14 @@ Supported flags:
   --hard <key>=<value>,... quota limits (create quota)
   --field-selector <k>=<v> filter events by involvedObject.name, involvedObject.kind,
                            type or reason; also != (get events)
-  -c, --container <name>   container to show logs of (logs)
+  -c, --container <name>   container to show logs of or run in (logs, exec)
   -p, --previous           logs of the previous, crashed container (logs)
   --tail <n>               only the last n log lines (logs)
   --ignore-daemonsets      leave DaemonSet Pods in place (drain)
   --force                  also delete Pods without a controller (drain)
   --delete-emptydir-data   also delete Pods with emptyDir data (drain)
 
-Cluster-scoped types (nodes, namespaces) ignore -n.`;
+Cluster-scoped types (nodes, namespaces, persistentvolumes, storageclasses) ignore -n.`;
 
 const checkKey = (key: string) => LABEL_KEY_RE.test(key) || fail(`error: invalid label key "${key}"`);
 const checkValue = (value: string) => LABEL_VALUE_RE.test(value) || fail(`error: invalid label value "${value}"`);
@@ -247,6 +312,10 @@ function parse(tokens: string[]): Parsed {
 
   for (let i = 2; i < tokens.length; i++) {
     const token = tokens[i];
+    if (token === "--") {
+      p.command = tokens.slice(i + 1);
+      break;
+    }
     if (!token.startsWith("-")) {
       p.args.push(token);
       continue;
@@ -313,6 +382,10 @@ function parse(tokens: string[]): Parsed {
       }
       case "--type": {
         const value = takeValue();
+        if (p.verb === "patch") {
+          if (value !== "merge" && value !== "strategic") fail(`error: --type "${value}" is not supported in this simulator, use merge or strategic`);
+          break;
+        }
         p.type = SERVICE_TYPES.find((t) => t.toLowerCase() === value.toLowerCase()) ?? fail(`error: invalid --type "${value}", use ClusterIP, NodePort or LoadBalancer`);
         break;
       }
@@ -342,7 +415,25 @@ function parse(tokens: string[]): Parsed {
         break;
       case "-p":
       case "--previous":
-        p.previous = true;
+        if (p.verb === "patch" && flag === "-p") p.patch = takeValue();
+        else p.previous = true;
+        break;
+      case "--patch":
+        p.patch = takeValue();
+        break;
+      case "--schedule":
+        p.schedule = takeValue();
+        break;
+      case "--from":
+        p.from = takeValue();
+        break;
+      case "-i":
+      case "-t":
+      case "-it":
+      case "-ti":
+      case "--stdin":
+      case "--tty":
+        if (p.verb !== "exec") fail(`error: ${flag} is only supported with kubectl exec`);
         break;
       case "--tail":
         p.tail = takeCount();
@@ -385,7 +476,7 @@ function target(p: Parsed): { type: ResourceType; name?: string } {
 }
 
 function notFound(type: ResourceType, name: string): never {
-  fail(`Error from server (NotFound): ${PLURAL[type]} "${name}" not found`);
+  fail(`Error from server (NotFound): ${apiName(type)} "${name}" not found`);
 }
 
 function requireNamespace(c: Cluster, ns: string) {
@@ -413,6 +504,11 @@ function endpointsText(c: Cluster, s: Service, limit = 3): string {
 
 const containerYaml = (image: string, { name, ...rest }: Container) => [{ name, image, ...rest }];
 
+const templateYaml = (t: PodTemplate) => ({
+  metadata: { labels: t.labels, annotations: t.annotations },
+  spec: { ...t.spec, containers: containerYaml(t.image, t.container) },
+});
+
 /** Pods get an IP once their sandbox exists, after ContainerCreating. */
 const hasIP = (p: Pod) => !!p.node && p.status !== "ContainerCreating" && p.status !== "Pending";
 
@@ -426,8 +522,9 @@ function manifest(c: Cluster, r: Resource, live = true) {
     labels: r.metadata.labels,
     annotations: nonEmpty(r.metadata.annotations),
   };
-  if (live && (r.kind === "Pod" || r.kind === "ReplicaSet") && r.owner) {
-    metadata.ownerReferences = [{ kind: r.kind === "Pod" ? "ReplicaSet" : "Deployment", name: r.owner }];
+  if (live && (r.kind === "Pod" || r.kind === "ReplicaSet" || r.kind === "Job") && r.owner) {
+    const owner = { Pod: r.kind === "Pod" ? (r.ownerKind ?? "ReplicaSet") : "", ReplicaSet: "Deployment", Job: "CronJob" }[r.kind];
+    metadata.ownerReferences = [{ kind: owner, name: r.owner }];
   }
   if (r.kind === "Pod") {
     const containers = containerYaml(r.image, r.container);
@@ -461,7 +558,7 @@ function manifest(c: Cluster, r: Resource, live = true) {
       metadata,
       spec: {
         type: r.type,
-        clusterIP: live ? r.clusterIP : undefined,
+        clusterIP: live || r.clusterIP === "None" ? r.clusterIP : undefined,
         selector: nonEmpty(r.selector),
         ports: r.ports.map((p) => ({ ...p, nodePort: live ? p.nodePort : undefined })),
       },
@@ -470,14 +567,13 @@ function manifest(c: Cluster, r: Resource, live = true) {
   }
   if (r.kind === "ConfigMap") return { apiVersion: "v1", kind: "ConfigMap", metadata, data: r.data };
   if (r.kind === "Secret") return { apiVersion: "v1", kind: "Secret", metadata, type: r.type, data: r.data };
-  const spec = {
-    replicas: r.replicas,
-    selector: { matchLabels: r.selector },
-    template: {
-      metadata: { labels: r.template.labels, annotations: r.template.annotations },
-      spec: { ...r.template.spec, containers: containerYaml(r.template.image, r.template.container) },
-    },
-  };
+  if (r.kind === "StorageClass" || r.kind === "PersistentVolume" || r.kind === "PersistentVolumeClaim") return storageManifest(c, r, metadata, live);
+  if (r.kind === "CronJob") return cronJobManifest(r, metadata, templateYaml(r.jobTemplate.template), live);
+  const template = templateYaml(r.template);
+  if (r.kind === "Job") return jobManifest(c, r, metadata, template, live);
+  if (r.kind === "DaemonSet") return daemonSetManifest(c, r, metadata, template, live);
+  if (r.kind === "StatefulSet") return statefulSetManifest(c, r, metadata, template, live);
+  const spec = { replicas: r.replicas, selector: { matchLabels: r.selector }, template };
   if (r.kind === "ReplicaSet") {
     const pods = podsOf(c, r);
     return {
@@ -591,8 +687,21 @@ function get(c: Cluster, p: Parsed): string {
         const usage = (ks: string[]) => ks.map((k) => `${k}: ${formatHard(k, quotaUsed(c, r, k))}/${r.hard[k]}`).join(", ");
         return [r.metadata.name, created, usage(keys.filter((k) => !k.startsWith("limits."))), usage(keys.filter((k) => k.startsWith("limits.")))];
       }
+      case "Job":
+        return jobRow(c, r, wide);
+      case "CronJob":
+        return cronJobRow(c, r, wide);
+      case "DaemonSet":
+        return daemonSetRow(c, r, wide);
+      case "StatefulSet":
+        return statefulSetRow(c, r, wide);
+      case "StorageClass":
+      case "PersistentVolume":
+      case "PersistentVolumeClaim":
+        return storageRow(c, r);
     }
   });
+  const workloadWide = wide ? ["CONTAINERS", "IMAGES", "SELECTOR"] : [];
   const header = {
     Pod: ["NAME", "READY", "STATUS", "RESTARTS", "AGE", ...(wide ? ["IP", "NODE"] : [])],
     ReplicaSet: ["NAME", "DESIRED", "CURRENT", "READY", "AGE", ...(wide ? ["CONTAINERS", "IMAGES", "SELECTOR"] : [])],
@@ -604,6 +713,11 @@ function get(c: Cluster, p: Parsed): string {
     Node: [...NODE_HEADER, ...(wide ? NODE_WIDE_HEADER : [])],
     LimitRange: ["NAME", "CREATED AT"],
     ResourceQuota: ["NAME", "AGE", "REQUEST", "LIMIT"],
+    Job: [...JOB_HEADER, ...workloadWide],
+    CronJob: [...CRONJOB_HEADER, ...workloadWide],
+    DaemonSet: [...DAEMONSET_HEADER, ...workloadWide],
+    StatefulSet: [...STATEFULSET_HEADER, ...workloadWide.slice(0, 2)],
+    ...STORAGE_HEADERS,
   }[type];
   const all = [header, ...rows];
   if (p.showLabels) all.forEach((row, i) => row.push(i ? labelText(items[i - 1].metadata.labels) : "LABELS"));
@@ -689,6 +803,8 @@ function describePod(c: Cluster, r: Pod): string {
       ["Startup", probeText(ctr.startupProbe)],
     ]),
     ...envLines(ctr),
+    ...containerLines(ctr),
+    ...volumeLines(r.spec?.volumes),
     pad([
       ["QoS Class", qosClass(ctr)],
       ["Node-Selectors", labelText(r.spec?.nodeSelector ?? {})],
@@ -714,11 +830,12 @@ function describe(c: Cluster, p: Parsed): string {
   requireNamespace(c, ns);
   const r = find(c, type, ns, name) ?? notFound(type, name);
   if (r.kind === "Node") return describeNode(c, r);
+  if (r.kind === "StorageClass" || r.kind === "PersistentVolume" || r.kind === "PersistentVolumeClaim") return describeStorage(c, r);
   const events = [...eventsOf(c, r), ...(r.kind === "Pod" ? kubeletEvents(c, r) : [])];
   return `${describeBody(c, r)}\n${eventsSection(c, events)}`;
 }
 
-function describeBody(c: Cluster, r: Exclude<Resource, Node>): string {
+function describeBody(c: Cluster, r: Exclude<Resource, Node | StorageClass | PersistentVolume | PersistentVolumeClaim>): string {
   const head: [string, string][] = [
     ["Name", r.metadata.name],
     ["Namespace", r.metadata.namespace],
@@ -728,6 +845,10 @@ function describeBody(c: Cluster, r: Exclude<Resource, Node>): string {
 
   if (r.kind === "Pod") return describePod(c, r);
   if (r.kind === "ResourceQuota") return describeQuota(c, r);
+  if (r.kind === "Job") return describeJob(c, r);
+  if (r.kind === "CronJob") return describeCronJob(c, r);
+  if (r.kind === "DaemonSet") return describeDaemonSet(c, r);
+  if (r.kind === "StatefulSet") return describeStatefulSet(c, r);
   if (r.kind === "LimitRange") {
     const rows = r.limits.flatMap((item) =>
       (["cpu", "memory"] as const)
@@ -796,7 +917,7 @@ function describeBody(c: Cluster, r: Exclude<Resource, Node>): string {
 
 function scale(c: Cluster, p: Parsed): string {
   const { type, name } = target(p);
-  if (type !== "Deployment" && type !== "ReplicaSet") fail(`error: cannot scale ${PLURAL[type]}, only deployments and replicasets`);
+  if (type !== "Deployment" && type !== "ReplicaSet" && type !== "StatefulSet") fail(`error: cannot scale ${PLURAL[type]}, only deployments, replicasets and statefulsets`);
   if (!name) fail("error: specify the name of the resource to scale");
   if (p.replicas === undefined) fail("error: required flag --replicas not set, e.g. --replicas=3");
   requireNamespace(c, p.namespace);
@@ -808,7 +929,9 @@ function scale(c: Cluster, p: Parsed): string {
 function deleteResource(c: Cluster, type: Kind, namespace: string, name: string): string {
   requireNamespace(c, namespace);
   const r = find(c, type, namespace, name) ?? notFound(type, name);
-  removeResource(c, r);
+  if (r.kind === "PersistentVolumeClaim") deleteClaim(c, r);
+  else if (r.kind === "PersistentVolume") deleteVolume(c, r);
+  else removeResource(c, r);
   return `${GROUP[type]} "${name}" deleted`;
 }
 
@@ -826,7 +949,7 @@ function remove(c: Cluster, p: Parsed): string {
   if (p.filename) return deleteFromFile(c, p);
   const { type, name } = target(p);
   if (type === "ReplicaSet" || type === "Endpoints" || type === "Event") {
-    fail(`error: delete ${PLURAL[type]} is not supported in this simulator, only pods, deployments, services, configmaps, secrets, namespaces, nodes, limitranges and resourcequotas`);
+    fail(`error: delete ${PLURAL[type]} is not supported in this simulator; delete the Deployment that owns them, or another type`);
   }
   if (!name) fail("error: specify the name of the resource to delete");
   return type === "Namespace" ? deleteNamespace(c, name) : deleteResource(c, type, nsOf(type, p), name);
@@ -927,10 +1050,15 @@ function create(c: Cluster, p: Parsed): string {
     return createResource(c, p, secret);
   }
   const { type, name } = target(p);
-  if (type !== "Deployment" && type !== "Namespace" && type !== "ConfigMap" && type !== "ResourceQuota") {
-    fail(`error: create ${PLURAL[type]} is not supported in this simulator, only deployments, namespaces, services, configmaps, secrets and quotas`);
+  if (!["Deployment", "Namespace", "ConfigMap", "ResourceQuota", "Job", "CronJob"].includes(type)) {
+    fail(`error: create ${PLURAL[type]} is not supported in this simulator, only deployments, namespaces, services, configmaps, secrets, quotas, jobs and cronjobs`);
   }
   if (!name) fail(`error: specify the name of the ${type.toLowerCase()} to create`);
+  if (p.command && type !== "Job" && type !== "CronJob") fail("error: a command after -- is only supported with kubectl create job and create cronjob");
+  if (p.from !== undefined && type !== "Job") fail("error: --from is only supported with kubectl create job");
+  if (p.schedule !== undefined && type !== "CronJob") fail("error: --schedule is only supported with kubectl create cronjob");
+  if (type === "Job") return createJob(c, p, name);
+  if (type === "CronJob") return createCronJob(c, p, name);
   if (p.hard !== undefined && type !== "ResourceQuota") fail("error: --hard is only supported with kubectl create quota");
   if (type === "ResourceQuota") return createResource(c, p, { kind: "ResourceQuota", metadata: meta(c, name, p.namespace, {}), hard: parseHardFlag(p.hard) });
   if (type === "ConfigMap") {
@@ -954,6 +1082,68 @@ function create(c: Cluster, p: Parsed): string {
     template: { labels: { ...labels }, image, container: { name: containerName(image) } },
     strategy: { ...DEFAULT_STRATEGY },
   });
+}
+
+/** The Job spec `kubectl create job|cronjob` builds: one container named after the object. */
+const cliJobSpec = (name: string, image: string, command: string[] | undefined, restartPolicy: "Never" | "OnFailure"): JobSpec => ({
+  completions: 1,
+  parallelism: 1,
+  backoffLimit: 6,
+  template: { labels: {}, image, container: { name, ...(command?.length && { command: [...command] }) }, spec: { restartPolicy } },
+});
+
+function createJob(c: Cluster, p: Parsed, name: string): string {
+  if (p.from === undefined) return createResource(c, p, newJob(c, name, p.namespace, cliJobSpec(name, requireImage(p), p.command, "Never")));
+  if (p.image || p.command) fail("error: --from cannot be used together with --image or a command");
+  const [kind, cronName, extra] = p.from.split("/");
+  if (!["cj", "cronjob", "cronjobs"].includes(kind.toLowerCase()) || !cronName || extra !== undefined) fail(`error: --from must name a cronjob, e.g. --from=cronjob/nightly`);
+  requireNamespace(c, p.namespace);
+  const cj = find(c, "CronJob", p.namespace, cronName) ?? notFound("CronJob", cronName);
+  return createResource(c, p, newJob(c, name, p.namespace, cj.jobTemplate, {}, { "cronjob.kubernetes.io/instantiate": "manual" }, cj.metadata.name));
+}
+
+function checkSchedule(name: string, schedule: string, timeZone?: string) {
+  const cron = parseCron(schedule);
+  if (typeof cron === "string") fail(`The CronJob "${name}" is invalid: spec.schedule: Invalid value: "${schedule}": ${cron}`);
+  if (timeZone !== undefined && !validTimeZone(timeZone)) fail(`The CronJob "${name}" is invalid: spec.timeZone: Invalid value: "${timeZone}": unknown time zone ${timeZone}`);
+}
+
+function createCronJob(c: Cluster, p: Parsed, name: string): string {
+  const image = requireImage(p);
+  const schedule = p.schedule ?? fail("error: required flag --schedule not set, e.g. --schedule='*/5 * * * *'");
+  checkSchedule(name, schedule);
+  return createResource(c, p, {
+    kind: "CronJob",
+    metadata: meta(c, name, p.namespace, {}),
+    schedule,
+    suspend: false,
+    concurrencyPolicy: "Allow",
+    successfulJobsHistoryLimit: 3,
+    failedJobsHistoryLimit: 1,
+    jobTemplate: cliJobSpec(name, image, p.command, "OnFailure"),
+    checkedAt: c.clock,
+  });
+}
+
+const PATCH_USAGE = `error: the simulator only supports kubectl patch cronjob <name> -p '{"spec":{"suspend":true}}' (or false)`;
+
+function patch(c: Cluster, p: Parsed): string {
+  const { type, name } = target(p);
+  if (type !== "CronJob" || !name) fail(PATCH_USAGE);
+  if (p.patch === undefined) fail("error: must specify --patch or -p, e.g. -p '{\"spec\":{\"suspend\":true}}'");
+  let body: unknown;
+  try {
+    body = JSON.parse(p.patch);
+  } catch {
+    fail(`error: unable to parse "${p.patch}": the patch must be JSON, e.g. '{"spec":{"suspend":true}}'`);
+  }
+  const suspend = (body as { spec?: { suspend?: unknown } } | null)?.spec?.suspend;
+  if (typeof suspend !== "boolean" || canonical(body) !== canonical({ spec: { suspend } })) fail(PATCH_USAGE);
+  requireNamespace(c, p.namespace);
+  const cj = find(c, "CronJob", p.namespace, name) ?? notFound("CronJob", name);
+  const changed = cj.suspend !== suspend;
+  cj.suspend = suspend;
+  return `cronjob.batch/${name} patched${changed ? "" : " (no change)"}`;
 }
 
 function runPod(c: Cluster, p: Parsed): string {
@@ -1095,7 +1285,8 @@ function rollout(c: Cluster, p: Parsed): string {
   const subs = ["status", "history", "undo", "restart", "pause", "resume"];
   if (!subs.includes(sub)) fail(`error: use kubectl rollout <${subs.join("|")}> deployment/<name>`);
   const { type, name } = target({ ...p, args: rest });
-  if (type !== "Deployment") fail("error: rollout is only supported for deployments in this simulator");
+  if (type === "DaemonSet" || type === "StatefulSet") return rolloutSet(c, p, sub, type, name);
+  if (type !== "Deployment") fail("error: rollout is only supported for deployments, daemonsets and statefulsets in this simulator");
   if (!name) fail(`error: specify the deployment, e.g. kubectl rollout ${sub} deployment/web`);
   if (p.revision !== undefined && sub !== "history") fail("error: --revision is only supported with kubectl rollout history");
   if (p.toRevision !== undefined && sub !== "undo") fail("error: --to-revision is only supported with kubectl rollout undo");
@@ -1120,6 +1311,17 @@ function rollout(c: Cluster, p: Parsed): string {
       return `${ref} ${pause ? "paused" : "resumed"}`;
     }
   }
+}
+
+function rolloutSet(c: Cluster, p: Parsed, sub: string, type: "DaemonSet" | "StatefulSet", name?: string): string {
+  if (sub !== "status" && sub !== "restart") fail(`error: only kubectl rollout status and rollout restart are supported for ${PLURAL[type]} in this simulator`);
+  if (!name) fail(`error: specify the ${type.toLowerCase()}, e.g. kubectl rollout ${sub} ${type.toLowerCase()}/web`);
+  if (p.revision !== undefined || p.toRevision !== undefined) fail("error: --revision and --to-revision are only supported for deployments");
+  requireNamespace(c, p.namespace);
+  const r = find(c, type, p.namespace, name) ?? notFound(type, name);
+  if (sub === "status") return setRolloutStatus(c, r).message;
+  r.template.annotations = { ...r.template.annotations, [RESTARTED_AT]: timestamp(c.clock) };
+  return `${GROUP[type]}/${name} restarted`;
 }
 
 function readManifests(c: Cluster, p: Parsed): Manifest[] {
@@ -1176,6 +1378,71 @@ function applied(r: Resource) {
       return { limits: r.limits };
     case "ResourceQuota":
       return { hard: r.hard };
+    case "Job": {
+      const { completions, parallelism, backoffLimit, activeDeadlineSeconds, ttlSecondsAfterFinished, template } = r;
+      return { completions, parallelism, backoffLimit, activeDeadlineSeconds, ttlSecondsAfterFinished, template };
+    }
+    case "CronJob": {
+      const { schedule, timeZone, suspend, concurrencyPolicy, successfulJobsHistoryLimit, failedJobsHistoryLimit, jobTemplate } = r;
+      return { schedule, timeZone, suspend, concurrencyPolicy, successfulJobsHistoryLimit, failedJobsHistoryLimit, jobTemplate };
+    }
+    case "DaemonSet":
+      return { selector: r.selector, template: r.template, updateStrategy: r.updateStrategy };
+    case "StatefulSet": {
+      const { serviceName, replicas, selector, template, volumeClaimTemplates, podManagementPolicy } = r;
+      return { serviceName, replicas, selector, template, volumeClaimTemplates, podManagementPolicy };
+    }
+    case "StorageClass":
+      return { provisioner: r.provisioner, reclaimPolicy: r.reclaimPolicy, volumeBindingMode: r.volumeBindingMode, allowVolumeExpansion: r.allowVolumeExpansion };
+    case "PersistentVolume":
+      return { capacity: r.capacity, accessModes: r.accessModes, reclaimPolicy: r.reclaimPolicy, storageClassName: r.storageClassName, hostPath: r.hostPath };
+    case "PersistentVolumeClaim":
+      return { accessModes: r.accessModes, storage: r.storage, storageClassName: r.storageClassName, defaultedClass: r.defaultedClass };
+  }
+}
+
+const same = (a: unknown, b: unknown) => canonical(a) === canonical(b);
+
+/** Why the API server rejects changing `existing` into `r`, or null. */
+function immutableChange(c: Cluster, existing: Resource, r: Resource): string | null {
+  const name = existing.metadata.name;
+  const invalid = (kind: string, rest: string) => `The ${kind} "${name}" is invalid: ${rest}`;
+  switch (existing.kind) {
+    case "Job": {
+      const j = r as Job;
+      if (!same(existing.template, j.template)) return invalid("Job", "spec.template: Invalid value: core.PodTemplateSpec{...}: field is immutable");
+      if (existing.completions !== j.completions) return invalid("Job", `spec.completions: Invalid value: ${j.completions}: field is immutable`);
+      return null;
+    }
+    case "DaemonSet":
+      return same(existing.selector, (r as DaemonSet).selector) ? null : invalid("DaemonSet", "spec.selector: Invalid value: v1.LabelSelector{...}: field is immutable");
+    case "StatefulSet": {
+      const fixed = (x: StatefulSet) => [x.selector, x.serviceName, x.volumeClaimTemplates, x.podManagementPolicy];
+      if (same(fixed(existing), fixed(r as StatefulSet))) return null;
+      return invalid("StatefulSet", "spec: Forbidden: updates to statefulset spec for fields other than 'replicas', 'ordinals', 'template', 'updateStrategy', 'persistentVolumeClaimRetentionPolicy' and 'minReadySeconds' are forbidden");
+    }
+    case "StorageClass": {
+      const sc = r as StorageClass;
+      const field = (["provisioner", "reclaimPolicy", "volumeBindingMode"] as const).find((f) => existing[f] !== sc[f]);
+      return field ? invalid("StorageClass", `${field}: Forbidden: updates to ${field} are forbidden.`) : null;
+    }
+    case "PersistentVolumeClaim": {
+      const pvc = r as PersistentVolumeClaim;
+      const fixed = (x: PersistentVolumeClaim) => [x.accessModes, x.storageClassName ?? null];
+      if (!same(fixed(existing), fixed(pvc)) || (existing.phase !== "Bound" && existing.storage !== pvc.storage)) {
+        return invalid("PersistentVolumeClaim", "spec: Forbidden: spec is immutable after creation except resources.requests and volumeAttributesClassName for bound claims");
+      }
+      if (existing.storage === pvc.storage) return null;
+      if (parseMemory(pvc.storage)! < parseMemory(existing.storage)!) return invalid("PersistentVolumeClaim", "spec.resources.requests.storage: Forbidden: field can not be less than previous value");
+      const sc = existing.storageClassName ? find(c, "StorageClass", "", existing.storageClassName) : undefined;
+      const pv = existing.volumeName ? find(c, "PersistentVolume", "", existing.volumeName) : undefined;
+      if (!sc?.allowVolumeExpansion || !pv?.metadata.annotations["pv.kubernetes.io/provisioned-by"]) {
+        return `Error from server (Forbidden): persistentvolumeclaims "${name}" is forbidden: only dynamically provisioned pvc can be resized and the storageclass that provisions the pvc must support resize`;
+      }
+      return null;
+    }
+    default:
+      return null;
   }
 }
 
@@ -1183,15 +1450,64 @@ const compared = (r: Resource) => ({ labels: r.metadata.labels, annotations: use
 
 // shortcut: only the first container is modelled; further containers and resources are validated but ignored.
 function toContainer(m: ManifestContainer): Container {
-  const { name, ports, env, envFrom, readinessProbe, livenessProbe, startupProbe, resources } = m;
-  return withDefaultRequests(structuredClone({ name, ports, env, envFrom, readinessProbe, livenessProbe, startupProbe, resources }));
+  const { name, command, args, ports, env, envFrom, readinessProbe, livenessProbe, startupProbe, resources, volumeMounts } = m;
+  return withDefaultRequests(structuredClone({ name, command, args, ports, env, envFrom, readinessProbe, livenessProbe, startupProbe, resources, volumeMounts }));
 }
 
 /** The modelled pod-level fields, or undefined when none is set (keeps template hashes stable). */
 function toPodSpec(m: ManifestPodSpec): PodSpec | undefined {
-  const { nodeName, nodeSelector, tolerations, affinity } = m;
-  const spec = Object.fromEntries(Object.entries({ nodeName, nodeSelector, tolerations, affinity }).filter(([, v]) => v !== undefined));
+  const { nodeName, nodeSelector, tolerations, affinity, volumes, serviceAccountName } = m;
+  // Always is the default; leaving it out keeps the hashes of existing templates.
+  const restartPolicy = m.restartPolicy === "Always" ? undefined : m.restartPolicy;
+  const fields = { restartPolicy, volumes, serviceAccountName, nodeName, nodeSelector, tolerations, affinity };
+  const spec = Object.fromEntries(Object.entries(fields).filter(([, v]) => v !== undefined));
   return Object.keys(spec).length ? structuredClone(spec) : undefined;
+}
+
+type ManifestTemplate = { metadata?: { labels?: Labels; annotations?: Labels }; spec: ManifestPodSpec };
+
+function toTemplate(t: ManifestTemplate): PodTemplate {
+  const template: PodTemplate = {
+    labels: { ...t.metadata?.labels },
+    ...(t.metadata?.annotations && { annotations: { ...t.metadata.annotations } }),
+    image: t.spec.containers[0].image,
+    container: toContainer(t.spec.containers[0]),
+  };
+  const spec = toPodSpec(t.spec);
+  if (spec) template.spec = spec;
+  return template;
+}
+
+/** Every volumeMount must name a Pod volume (or, in a StatefulSet, a claim template). */
+function checkMounts(kind: string, name: string, spec: ManifestPodSpec, path: string, extra: string[] = []) {
+  const names = new Set([...(spec.volumes ?? []).map((v) => v.name), ...extra]);
+  spec.containers.forEach((ctr, i) =>
+    ctr.volumeMounts?.forEach((m, j) => {
+      if (!names.has(m.name)) fail(`The ${kind} "${name}" is invalid: ${path}containers[${i}].volumeMounts[${j}].name: Not found: "${m.name}"`);
+    }),
+  );
+}
+
+type ManifestJobSpec = Extract<Manifest, { kind: "Job" }>["spec"];
+const MAX_COMPLETIONS = 100;
+
+function toJobSpec(kind: string, name: string, s: ManifestJobSpec, path: string): JobSpec {
+  const policy = s.template.spec.restartPolicy;
+  if (policy !== "Never" && policy !== "OnFailure") {
+    const why = policy ? `Unsupported value: "${policy}": supported values: "OnFailure", "Never"` : `Required value: valid values: "OnFailure", "Never"`;
+    fail(`The ${kind} "${name}" is invalid: ${path}template.spec.restartPolicy: ${why}`);
+  }
+  checkMounts(kind, name, s.template.spec, `${path}template.spec.`);
+  if ((s.parallelism ?? 1) > MAX_REPLICAS) fail(`error: this simulator supports a parallelism of at most ${MAX_REPLICAS}`);
+  if ((s.completions ?? 1) > MAX_COMPLETIONS) fail(`error: this simulator supports at most ${MAX_COMPLETIONS} completions`);
+  return {
+    completions: s.completions ?? 1,
+    parallelism: s.parallelism ?? 1,
+    backoffLimit: s.backoffLimit ?? 6,
+    activeDeadlineSeconds: s.activeDeadlineSeconds,
+    ttlSecondsAfterFinished: s.ttlSecondsAfterFinished,
+    template: toTemplate(s.template),
+  };
 }
 
 function toNode(c: Cluster, m: Extract<Manifest, { kind: "Node" }>): Node {
@@ -1203,14 +1519,16 @@ function toNode(c: Cluster, m: Extract<Manifest, { kind: "Node" }>): Node {
 }
 
 const namespaceOf = (m: Exclude<Manifest, { kind: "Namespace" }>, fallback: string) =>
-  m.kind === "Node" ? "" : (m.metadata.namespace ?? fallback);
+  CLUSTER_SCOPED.has(m.kind) ? "" : ((m.metadata as { namespace?: string }).namespace ?? fallback);
 
 function toResource(c: Cluster, m: Exclude<Manifest, { kind: "Namespace" }>, namespace: string): Resource {
   const labels = m.metadata.labels ?? {};
   const annotations = m.metadata.annotations ?? {};
+  const metadata = () => meta(c, m.metadata.name, namespace, labels, annotations);
   switch (m.kind) {
     case "Pod": {
       const [first] = m.spec.containers;
+      checkMounts("Pod", m.metadata.name, m.spec, "spec.");
       const spec = toPodSpec(m.spec);
       const pod = newPod(c, m.metadata.name, namespace, { labels, annotations, image: first.image, container: toContainer(first), ...(spec && { spec }) });
       pod.specKey = podSpecKey(m.spec);
@@ -1234,18 +1552,91 @@ function toResource(c: Cluster, m: Exclude<Manifest, { kind: "Namespace" }>, nam
       for (const [k, v] of Object.entries(m.stringData ?? {})) data[k] = encodeBase64(v);
       return { kind: "Secret", metadata: meta(c, m.metadata.name, namespace, labels, annotations), type: m.type ?? "Opaque", data };
     }
+    case "Job":
+      return newJob(c, m.metadata.name, namespace, toJobSpec("Job", m.metadata.name, m.spec, "spec."), labels, annotations);
+    case "CronJob": {
+      const s = m.spec;
+      checkSchedule(m.metadata.name, s.schedule, s.timeZone);
+      return {
+        kind: "CronJob",
+        metadata: metadata(),
+        schedule: s.schedule,
+        ...(s.timeZone !== undefined && { timeZone: s.timeZone }),
+        suspend: s.suspend ?? false,
+        concurrencyPolicy: s.concurrencyPolicy ?? "Allow",
+        successfulJobsHistoryLimit: s.successfulJobsHistoryLimit ?? 3,
+        failedJobsHistoryLimit: s.failedJobsHistoryLimit ?? 1,
+        jobTemplate: toJobSpec("CronJob", m.metadata.name, s.jobTemplate.spec, "spec.jobTemplate.spec."),
+        checkedAt: c.clock,
+      };
+    }
+    case "DaemonSet": {
+      const s = m.spec;
+      checkMounts("DaemonSet", m.metadata.name, s.template.spec, "spec.template.spec.");
+      const strategy = s.updateStrategy;
+      return {
+        kind: "DaemonSet",
+        metadata: metadata(),
+        selector: { ...s.selector.matchLabels },
+        template: toTemplate(s.template),
+        updateStrategy: { type: strategy?.type ?? "RollingUpdate", maxUnavailable: strategy?.rollingUpdate?.maxUnavailable ?? 1 },
+      };
+    }
+    case "StatefulSet": {
+      const s = m.spec;
+      if ((s.replicas ?? 1) > MAX_REPLICAS) fail(`error: this simulator supports at most ${MAX_REPLICAS} replicas`);
+      const claims = (s.volumeClaimTemplates ?? []).map((t) => ({
+        name: t.metadata.name,
+        ...(t.metadata.labels && { labels: { ...t.metadata.labels } }),
+        accessModes: [...t.spec.accessModes],
+        storage: t.spec.resources.requests.storage,
+        ...(t.spec.storageClassName !== undefined && { storageClassName: t.spec.storageClassName }),
+      }));
+      checkMounts("StatefulSet", m.metadata.name, s.template.spec, "spec.template.spec.", claims.map((x) => x.name));
+      return {
+        kind: "StatefulSet",
+        metadata: metadata(),
+        serviceName: s.serviceName ?? "",
+        replicas: s.replicas ?? 1,
+        selector: { ...s.selector.matchLabels },
+        template: toTemplate(s.template),
+        volumeClaimTemplates: claims,
+        podManagementPolicy: s.podManagementPolicy ?? "OrderedReady",
+      };
+    }
+    case "StorageClass":
+      return {
+        kind: "StorageClass",
+        metadata: metadata(),
+        provisioner: m.provisioner,
+        reclaimPolicy: m.reclaimPolicy ?? "Delete",
+        volumeBindingMode: m.volumeBindingMode ?? "Immediate",
+        allowVolumeExpansion: m.allowVolumeExpansion ?? false,
+      };
+    case "PersistentVolume":
+      return {
+        kind: "PersistentVolume",
+        metadata: metadata(),
+        capacity: m.spec.capacity.storage,
+        accessModes: [...m.spec.accessModes],
+        reclaimPolicy: m.spec.persistentVolumeReclaimPolicy ?? "Retain",
+        storageClassName: m.spec.storageClassName ?? "",
+        hostPath: { path: m.spec.hostPath.path },
+        phase: "Available",
+      };
+    case "PersistentVolumeClaim":
+      return {
+        kind: "PersistentVolumeClaim",
+        metadata: metadata(),
+        accessModes: [...m.spec.accessModes],
+        storage: m.spec.resources.requests.storage,
+        ...claimClass(c, m.spec.storageClassName),
+        phase: "Pending",
+      };
   }
   if (m.spec.replicas > MAX_REPLICAS) fail(`error: this simulator supports at most ${MAX_REPLICAS} replicas`);
-  const t = m.spec.template;
-  const template: PodTemplate = {
-    labels: { ...t.metadata.labels },
-    ...(t.metadata.annotations && { annotations: { ...t.metadata.annotations } }),
-    image: t.spec.containers[0].image,
-    container: toContainer(t.spec.containers[0]),
-  };
-  const podSpec = toPodSpec(t.spec);
-  if (podSpec) template.spec = podSpec;
-  const base = { metadata: meta(c, m.metadata.name, namespace, labels, annotations), replicas: m.spec.replicas, selector: { ...m.spec.selector.matchLabels }, template };
+  checkMounts(m.kind, m.metadata.name, m.spec.template.spec, "spec.template.spec.");
+  const base = { metadata: metadata(), replicas: m.spec.replicas, selector: { ...m.spec.selector.matchLabels }, template: toTemplate(m.spec.template) };
   if (m.kind === "ReplicaSet") return { kind: "ReplicaSet", ...base };
   const s = m.spec.strategy;
   return {
@@ -1268,7 +1659,7 @@ function assignServiceFields(c: Cluster, s: Service, existing?: Service) {
     s.clusterIP = existing.clusterIP;
     for (const port of s.ports) port.nodePort ??= existing.ports.find((x) => x.port === port.port)?.nodePort;
   } else if (!s.clusterIP) allocateClusterIP(c, s);
-  else if (list(c, "Service").some((x) => x.clusterIP === s.clusterIP)) {
+  else if (s.clusterIP !== "None" && list(c, "Service").some((x) => x.clusterIP === s.clusterIP)) {
     fail(`The Service "${s.metadata.name}" is invalid: spec.clusterIP: Invalid value: "${s.clusterIP}": provided IP is already allocated`);
   }
   allocateNodePorts(c, s);
@@ -1303,11 +1694,22 @@ function apply(c: Cluster, p: Parsed): string {
       if (existing.kind === "Pod" && specKeyOf(existing) !== specKeyOf(r as Pod)) {
         fail(`The Pod "${name}" is invalid: spec: Forbidden: pod updates may not change fields other than \`spec.containers[*].image\``);
       }
+      if (existing.kind === "PersistentVolumeClaim" && (r as PersistentVolumeClaim).defaultedClass && existing.defaultedClass) {
+        // An omitted class keeps the defaulted one, as kubectl's three-way merge would.
+        (r as PersistentVolumeClaim).storageClassName = existing.storageClassName;
+      }
+      const rejected = immutableChange(draft, existing, r);
+      if (rejected) fail(rejected);
       if (existing.kind === "Pod" && existing.image !== (r as Pod).image) existing.status = "ContainerCreating";
       const managed = Object.fromEntries(Object.entries(existing.metadata.annotations).filter(([k]) => k.startsWith(MANAGED_PREFIX)));
       existing.metadata.labels = r.metadata.labels;
       existing.metadata.annotations = { ...managed, ...r.metadata.annotations };
       Object.assign(existing, applied(r));
+      if (existing.kind === "PersistentVolumeClaim" && existing.volumeName) {
+        // The resizer grows the volume to the new request.
+        const pv = find(draft, "PersistentVolume", "", existing.volumeName);
+        if (pv) pv.capacity = existing.storage;
+      }
       result = "configured";
     }
     return { ref: `${GROUP[r.kind]}/${name}`, result, yaml: manifest(draft, existing ?? r, false) };
@@ -1350,13 +1752,17 @@ function execute(c: Cluster, p: Parsed): string {
   if (p.output === "wide") only(p.verb === "get", "-o wide is only supported with kubectl get");
   if (p.output) only(p.verb === "get" || p.dryRun, "-o is only supported with kubectl get, or together with --dry-run=client");
   if (p.replicas !== undefined) only(p.verb === "scale" || p.verb === "create", "--replicas is only supported with kubectl scale and create deployment");
-  if (p.image) only(p.verb === "create" || p.verb === "run", "--image is only supported with kubectl create deployment and run");
+  if (p.image) only(p.verb === "create" || p.verb === "run", "--image is only supported with kubectl create deployment, job, cronjob and run");
   if (p.filename) only(p.verb === "apply" || p.verb === "delete", "-f is only supported with kubectl apply and delete");
   if (p.port || p.targetPort || p.type || p.name) only(p.verb === "expose", "--port, --target-port, --type and --name are only supported with kubectl expose");
   if (p.tcp.length) only(p.verb === "create", "--tcp is only supported with kubectl create service");
   if (p.literals.length) only(p.verb === "create", "--from-literal is only supported with kubectl create configmap and create secret generic");
   if (p.overwrite) only(["label", "annotate", "taint"].includes(p.verb), "--overwrite is only supported with kubectl label, annotate and taint");
-  if (p.container !== undefined || p.previous || p.tail !== undefined) only(p.verb === "logs", "-c, --previous and --tail are only supported with kubectl logs");
+  if (p.container !== undefined) only(p.verb === "logs" || p.verb === "exec", "-c is only supported with kubectl logs and exec");
+  if (p.previous || p.tail !== undefined) only(p.verb === "logs", "--previous and --tail are only supported with kubectl logs");
+  if (p.command) only(p.verb === "exec" || p.verb === "create", "a command after -- is only supported with kubectl exec, create job and create cronjob");
+  if (p.schedule !== undefined || p.from !== undefined) only(p.verb === "create", "--schedule and --from are only supported with kubectl create cronjob and create job");
+  if (p.patch !== undefined) only(p.verb === "patch", "-p is only supported with kubectl patch, or as --previous with kubectl logs");
   if (p.fieldSelector) only(p.verb === "get", "--field-selector is only supported with kubectl get events");
   if (p.force || p.ignoreDaemonsets || p.deleteEmptydirData) only(p.verb === "drain", "--force, --ignore-daemonsets and --delete-emptydir-data are only supported with kubectl drain");
   if (p.revision !== undefined || p.toRevision !== undefined) only(p.verb === "rollout", "--revision and --to-revision are only supported with kubectl rollout");
@@ -1399,6 +1805,10 @@ function execute(c: Cluster, p: Parsed): string {
       return top(c, p);
     case "logs":
       return logs(c, p);
+    case "exec":
+      return exec(c, p);
+    case "patch":
+      return patch(c, p);
     default:
       fail(`error: "kubectl ${p.verb}" is not supported in this simulator.\nType "kubectl help" for the supported commands.`);
   }

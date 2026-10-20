@@ -39,6 +39,14 @@ export type Parsed = {
   force: boolean;
   ignoreDaemonsets: boolean;
   deleteEmptydirData: boolean;
+  /** Words after `--` (exec, create job, create cronjob). */
+  command?: string[];
+  /** create cronjob --schedule */
+  schedule?: string;
+  /** create job --from=cronjob/<name> */
+  from?: string;
+  /** patch -p */
+  patch?: string;
 };
 
 export function selects(labels: Labels, reqs: Requirement[]): boolean {

@@ -121,7 +121,7 @@ describe("delete", () => {
 
   it("cascades a Deployment delete to its ReplicaSet and Pods", () => {
     const { c } = exec(web(), "kubectl delete deployment web");
-    expect(c.resources).toHaveLength(0);
+    expect(c.resources.filter((r) => r.kind !== "StorageClass")).toHaveLength(0);
   });
 });
 
@@ -157,7 +157,7 @@ describe("bad input", () => {
   });
 
   it("explains unsupported commands", () => {
-    const r = exec(web(), "kubectl exec web");
+    const r = exec(web(), "kubectl attach web");
     expect(r.error).toBe(true);
     expect(r.output).toContain("kubectl help");
   });

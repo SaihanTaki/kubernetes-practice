@@ -190,3 +190,24 @@ spec:
     expect(check(c, { kind: "pod-status", podName: "x", expectedValue: "Pending" })).toBe(true);
   });
 });
+
+describe("Part B validators", () => {
+  it("are false for missing objects", () => {
+    const c = createCluster();
+    expect(check(c, { kind: "job-status", jobName: "nope", expectedValue: "Running" })).toBe(false);
+    expect(check(c, { kind: "job-succeeded", jobName: "nope", expectedValue: 0 })).toBe(false);
+    expect(check(c, { kind: "cronjob-suspended", cronJobName: "nope", expectedValue: false })).toBe(false);
+    expect(check(c, { kind: "daemonset-pods", name: "nope", expectedValue: 0 })).toBe(false);
+    expect(check(c, { kind: "pvc-status", claimName: "nope", expectedValue: "Pending" })).toBe(false);
+    expect(check(c, { kind: "pv-status", pvName: "nope", expectedValue: "Available" })).toBe(false);
+    expect(check(c, { kind: "file-content", podName: "nope", path: "/x", expectedValue: null })).toBe(false);
+    expect(check(c, { kind: "ready-pod-count", ownerType: "StatefulSet", ownerName: "nope", expectedValue: 0 })).toBe(false);
+  });
+
+  it("checks a file, trailing newline ignored, and its absence", () => {
+    const c = run(run(base(), "kubectl get pods").cluster, "kubectl exec solo -- sh -c 'echo hello > /tmp/x'").cluster;
+    expect(check(c, { kind: "file-content", podName: "solo", path: "/tmp/x", expectedValue: "hello" })).toBe(true);
+    expect(check(c, { kind: "file-content", podName: "solo", path: "/tmp/x", expectedValue: "hello\n" })).toBe(false);
+    expect(check(c, { kind: "file-content", podName: "solo", path: "/tmp/y", expectedValue: null })).toBe(true);
+  });
+});

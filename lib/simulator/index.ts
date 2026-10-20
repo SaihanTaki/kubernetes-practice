@@ -12,6 +12,9 @@ export {
   replicaSetsOf,
   type QosClass,
 } from "./cluster";
+export { daemonSetStatus } from "./sets";
+export { jobCounts, jobStatus } from "./batch";
+export { readFile } from "./files";
 export { createCluster } from "./fixture";
 export { HELP, run } from "./kubectl";
 export { parseQuantity } from "./quantity";

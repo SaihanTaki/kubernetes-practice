@@ -1,8 +1,13 @@
 import { MI, parseMemory } from "./quantity";
 import type { Pod } from "./types";
 
+/** Wall time at clock 0. Fixed and mid-morning, so nightly CronJob schedules never fire during a lab. */
+export const WALL_CLOCK_START = Date.UTC(2026, 0, 15, 10, 0, 0);
+
+export const wallTime = (clock: number) => new Date(WALL_CLOCK_START + clock * 1000);
+
 /** A clock-derived RFC 3339 time, so output is deterministic. */
-export const timestamp = (clock: number) => new Date(Date.UTC(2026, 0, 1) + clock * 1000).toISOString().replace(/\.\d+Z$/, "Z");
+export const timestamp = (clock: number) => wallTime(clock).toISOString().replace(/\.\d+Z$/, "Z");
 
 const logTime = (clock: number) => timestamp(clock).replace(/-/g, "/").replace("T", " ").replace("Z", "");
 
@@ -50,7 +55,7 @@ export const IMAGES: Record<string, ImageInfo> = {
     memoryMi: 30,
     logs: (p) => [
       `AH00558: httpd: Could not reliably determine the server's fully qualified domain name, using ${p.metadata.name}. Set the 'ServerName' directive globally to suppress this message`,
-      `[${new Date(Date.UTC(2026, 0, 1) + started(p) * 1000).toUTCString()}] [mpm_event:notice] [pid 1:tid 1] AH00489: Apache/2.4.62 (Unix) configured -- resuming normal operations`,
+      `[${wallTime(started(p)).toUTCString()}] [mpm_event:notice] [pid 1:tid 1] AH00489: Apache/2.4.62 (Unix) configured -- resuming normal operations`,
     ],
   },
   redis: {
@@ -60,6 +65,7 @@ export const IMAGES: Record<string, ImageInfo> = {
     logs: () => ["1:C * oO0OoO0OoO0Oo Redis is starting oO0OoO0OoO0Oo", "1:M * Server initialized", "1:M * Ready to accept connections tcp"],
   },
   busybox: { tags: ["1.36", "latest"], memoryMi: 2, logs: () => [] },
+  perl: { tags: ["5.34", "5.40", "latest"], memoryMi: 10, logs: () => [] },
   "example/api": {
     tags: ["1.0", "1.1", "2.0", "latest"],
     http: 8080,

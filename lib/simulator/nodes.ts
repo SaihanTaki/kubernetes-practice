@@ -178,11 +178,10 @@ function setUnschedulable(c: Cluster, n: Node, on: boolean): string {
   return `node/${n.metadata.name} ${word}`;
 }
 
-/** Owner kinds whose Pods drain leaves alone with --ignore-daemonsets. Part B adds DaemonSet Pods. */
+/** Owner kinds whose Pods drain leaves alone with --ignore-daemonsets. */
 const DAEMON_OWNERS: string[] = ["DaemonSet"];
 
-// Pod volumes arrive in Part B; this reads them without depending on that type yet.
-const hasLocalStorage = (p: Pod): boolean => (p as { spec?: { volumes?: { emptyDir?: object }[] } }).spec?.volumes?.some((v) => v.emptyDir) ?? false;
+const hasLocalStorage = (p: Pod): boolean => p.spec?.volumes?.some((v) => v.emptyDir) ?? false;
 
 export function drain(c: Cluster, p: Parsed): string {
   const [n, rest] = nodeArg(c, p, false);

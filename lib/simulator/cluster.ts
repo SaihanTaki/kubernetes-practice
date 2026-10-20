@@ -1,8 +1,13 @@
 import { admit, withDefaultRequests } from "./admission";
+import { reconcileCronJob, reconcileJob } from "./batch";
 import { recordEvent } from "./events";
+import { collectFiles, writeFile } from "./files";
 import { imageInfo } from "./images";
 import { MI, parseMemory, parseQuantity } from "./quantity";
 import { evictUntolerated, schedule } from "./scheduler";
+import { reconcileDaemonSet, reconcileStatefulSet } from "./sets";
+import { runProgram } from "./shell";
+import { reconcileStorage } from "./storage";
 import type {
   Cluster,
   Container,
@@ -26,7 +31,7 @@ export const WORKERS = ["worker-1", "worker-2"];
 export const CONTROL_PLANE = "control-plane";
 export const CONTROL_PLANE_TAINT = "node-role.kubernetes.io/control-plane";
 /** Kinds whose objects have no namespace (metadata.namespace is ""). */
-export const CLUSTER_SCOPED: ReadonlySet<string> = new Set(["Node", "Namespace"]);
+export const CLUSTER_SCOPED: ReadonlySet<string> = new Set(["Node", "Namespace", "PersistentVolume", "StorageClass"]);
 export const SECONDS_PER_COMMAND = 5;
 export const REVISION = "deployment.kubernetes.io/revision";
 export const CHANGE_CAUSE = "kubernetes.io/change-cause";
@@ -38,7 +43,7 @@ export function hash(input: string): number {
   return h >>> 0;
 }
 
-function suffix(seed: number, length: number): string {
+export function suffix(seed: number, length: number): string {
   let n = hash(String(seed));
   let out = "";
   for (let i = 0; i < length; i++) {
@@ -132,7 +137,7 @@ export function replicaSetsOf(c: Cluster, d: Deployment): ReplicaSet[] {
   return list(c, "ReplicaSet", d.metadata.namespace).filter((rs) => rs.owner === d.metadata.name);
 }
 
-const templateHash = (t: PodTemplate) => suffix(hash(canonical(t)), 10);
+export const templateHash = (t: PodTemplate) => suffix(hash(canonical(t)), 10);
 
 export function currentReplicaSet(c: Cluster, d: Deployment) {
   return find(c, "ReplicaSet", d.metadata.namespace, `${d.metadata.name}-${templateHash(d.template)}`);
@@ -211,6 +216,17 @@ export function configError(c: Cluster, p: Pod): string | null {
   return null;
 }
 
+/** Why a configMap or secret volume cannot be mounted, as the kubelet's FailedMount event says, or null. */
+export function mountError(c: Cluster, p: Pod): string | null {
+  const ns = p.metadata.namespace;
+  for (const v of p.spec?.volumes ?? []) {
+    const fail = (what: string) => `MountVolume.SetUp failed for volume "${v.name}" : ${what} not found`;
+    if (v.configMap && !find(c, "ConfigMap", ns, v.configMap.name)) return fail(`configmap "${v.configMap.name}"`);
+    if (v.secret && !find(c, "Secret", ns, v.secret.secretName)) return fail(`secret "${v.secret.secretName}"`);
+  }
+  return null;
+}
+
 /** Whether the image needs more memory than the container's limit allows. */
 export function oomKilled(p: Pod) {
   const limit = parseMemory(p.container.resources?.limits?.memory ?? "");
@@ -236,29 +252,54 @@ export const crashes = (p: Pod) =>
 /** Why the previous container run ended, as `describe` shows under Last State, or null. */
 export function lastTermination(p: Pod): { reason: string; exitCode: number } | null {
   if (!p.restarts) return null;
+  const exit = runProgram(p.image, p.container)?.exitCode;
+  if (exit !== undefined && exit !== null) return { reason: exit ? "Error" : "Completed", exitCode: exit };
   if (imageInfo(p.image).crashes) return { reason: "Error", exitCode: 1 };
   if (oomKilled(p)) return { reason: "OOMKilled", exitCode: 137 };
   return null;
 }
 
-/** Pull the image, resolve config references and start the container. */
+/** Mount volumes, pull the image, resolve config references and start the container. */
 export function start(c: Cluster, p: Pod) {
   p.ready = false;
-  if (pullError(p.image)) p.status = "ImagePullBackOff";
+  if (mountError(c, p)) p.status = "ContainerCreating";
+  else if (pullError(p.image)) p.status = "ImagePullBackOff";
   else if (configError(c, p)) p.status = "CreateContainerConfigError";
   else if (imageInfo(p.image).crashes) {
-    p.status = "CrashLoopBackOff";
-    p.restarts = Math.max(p.restarts, 1);
+    if (p.spec?.restartPolicy === "Never") p.status = "Error";
+    else {
+      p.status = "CrashLoopBackOff";
+      p.restarts = Math.max(p.restarts, 1);
+    }
   } else if (oomKilled(p)) p.status = "OOMKilled";
   else {
     p.status = "Running";
     p.ready = !crashes(p) && !probeFailure(p, p.container.readinessProbe);
+    for (const w of runProgram(p.image, p.container)?.writes ?? []) writeFile(c, p, w.path, w.text, w.append);
+  }
+}
+
+/** A run-to-completion container exited: restartPolicy decides between a final state and a restart. */
+function exited(p: Pod, code: number) {
+  p.ready = false;
+  const policy = p.spec?.restartPolicy ?? "Always";
+  if (policy === "Never" || (policy === "OnFailure" && code === 0)) p.status = code === 0 ? "Completed" : "Error";
+  else {
+    p.restarts++;
+    p.status = "CrashLoopBackOff";
   }
 }
 
 // shortcut: probe timing is not simulated; a failing liveness probe restarts the container once per command.
 function tick(p: Pod) {
+  const exit = runProgram(p.image, p.container)?.exitCode;
+  if (exit !== undefined && exit !== null) return exited(p, exit);
   if (!crashes(p)) return;
+  if (p.spec?.restartPolicy === "Never") {
+    p.ready = false;
+    p.status = oomKilled(p) ? "OOMKilled" : "Error";
+    return;
+  }
   p.restarts++;
   if (imageInfo(p.image).crashes || p.restarts >= 3) p.status = "CrashLoopBackOff";
   else if (oomKilled(p)) p.status = "OOMKilled";
@@ -282,7 +323,14 @@ export function endpointsOf(c: Cluster, svc: Service): { pod: Pod; ip: string; p
  * Creates a Pod for a controller, through admission (LimitRange, ResourceQuota). A rejection becomes a
  * FailedCreate event on the owner and no Pod. Returns whether the Pod was created.
  */
-export function spawnPod(c: Cluster, owner: Extract<Resource, { kind: PodOwnerKind }>, name: string, t: PodTemplate, source: string): boolean {
+export function spawnPod(
+  c: Cluster,
+  owner: Extract<Resource, { kind: PodOwnerKind }>,
+  name: string,
+  t: PodTemplate,
+  source: string,
+  created = `Created pod: ${name}`,
+): boolean {
   const seq = c.seq;
   const pod = newPod(c, name, owner.metadata.namespace, t);
   pod.owner = owner.metadata.name;
@@ -295,7 +343,7 @@ export function spawnPod(c: Cluster, owner: Extract<Resource, { kind: PodOwnerKi
     return false;
   }
   c.resources.push(pod);
-  recordEvent(c, owner, "Normal", "SuccessfulCreate", `Created pod: ${name}`, source);
+  recordEvent(c, owner, "Normal", "SuccessfulCreate", created, source);
   return true;
 }
 
@@ -376,7 +424,8 @@ function reconcileDeployment(c: Cluster, d: Deployment) {
 /**
  * Simplified controllers: Deployments roll between one ReplicaSet per pod template,
  * ReplicaSets create or remove Pods to match their replica count and release Pods
- * whose labels stop matching, and resources whose owner is gone are garbage collected.
+ * whose labels stop matching, Jobs, CronJobs, DaemonSets and StatefulSets run theirs,
+ * claims bind, and resources whose owner is gone are garbage collected.
  */
 export function reconcile(c: Cluster) {
   // Pod garbage collection for deleted nodes, and NoExecute taints.
@@ -384,11 +433,13 @@ export function reconcile(c: Cluster) {
   c.resources = c.resources.filter((r) => !(r.kind === "Pod" && r.node && !nodes.has(r.node)));
   evictUntolerated(c);
 
+  for (const cj of list(c, "CronJob")) reconcileCronJob(c, cj);
+  c.resources = c.resources.filter((r) => !(r.kind === "Job" && r.owner && !find(c, "CronJob", r.metadata.namespace, r.owner)));
   for (const d of list(c, "Deployment")) reconcileDeployment(c, d);
 
   // shortcut: orphaned Pods are never adopted again, even if their labels match a selector later.
   for (const p of list(c, "Pod")) {
-    const rs = p.owner ? find(c, "ReplicaSet", p.metadata.namespace, p.owner) : undefined;
+    const rs = p.owner && ownerKindOf(p) === "ReplicaSet" ? find(c, "ReplicaSet", p.metadata.namespace, p.owner) : undefined;
     if (rs && !matches(p.metadata.labels, rs.selector)) p.owner = undefined;
   }
 
@@ -411,7 +462,12 @@ export function reconcile(c: Cluster) {
       c.resources = c.resources.filter((r) => !extra.includes(r as Pod));
     }
   }
+  for (const j of list(c, "Job")) reconcileJob(c, j);
+  for (const ds of list(c, "DaemonSet")) reconcileDaemonSet(c, ds);
+  for (const sts of list(c, "StatefulSet")) reconcileStatefulSet(c, sts);
+  reconcileStorage(c);
   schedule(c);
+  collectFiles(c);
 }
 
 const startable = (p: Pod) => !!p.node && (p.status === "ContainerCreating" || p.status === "CreateContainerConfigError");

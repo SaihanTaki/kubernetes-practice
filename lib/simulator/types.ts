@@ -52,9 +52,25 @@ export type ResourceList = { cpu?: string; memory?: string };
 
 export type Resources = { requests?: ResourceList; limits?: ResourceList };
 
+export type VolumeMount = { name: string; mountPath: string; readOnly?: boolean; subPath?: string };
+
+type KeyToPath = { key: string; path: string };
+
+/** A Pod volume: exactly one source is set. */
+export type Volume = {
+  name: string;
+  emptyDir?: { medium?: string; sizeLimit?: string };
+  hostPath?: { path: string; type?: string };
+  configMap?: { name: string; items?: KeyToPath[] };
+  secret?: { secretName: string; items?: KeyToPath[] };
+  persistentVolumeClaim?: { claimName: string; readOnly?: boolean };
+};
+
 /** Everything about the (single modelled) container except its image. */
 export type Container = {
   name: string;
+  command?: string[];
+  args?: string[];
   resources?: Resources;
   ports?: { containerPort: number; name?: string; protocol?: string }[];
   env?: EnvVar[];
@@ -62,6 +78,7 @@ export type Container = {
   readinessProbe?: Probe;
   livenessProbe?: Probe;
   startupProbe?: Probe;
+  volumeMounts?: VolumeMount[];
 };
 
 export type TaintEffect = "NoSchedule" | "PreferNoSchedule" | "NoExecute";
@@ -95,6 +112,10 @@ export type Affinity = {
 
 /** Pod-level spec fields besides the container. Left out when empty, so template hashes and Pod names stay stable. */
 export type PodSpec = {
+  /** Left out when Always, the default. */
+  restartPolicy?: "OnFailure" | "Never";
+  volumes?: Volume[];
+  serviceAccountName?: string;
   nodeName?: string;
   nodeSelector?: Labels;
   tolerations?: Toleration[];
@@ -104,7 +125,7 @@ export type PodSpec = {
 export type PodTemplate = { labels: Labels; annotations?: Labels; image: string; container: Container; spec?: PodSpec };
 
 /** Kinds that own Pods. */
-export type PodOwnerKind = "ReplicaSet";
+export type PodOwnerKind = "ReplicaSet" | "Job" | "DaemonSet" | "StatefulSet";
 
 export type Pod = {
   kind: "Pod";
@@ -191,7 +212,121 @@ export type LimitRange = { kind: "LimitRange"; metadata: Meta; limits: LimitRang
 /** `hard` maps a quota key such as "pods" or "requests.cpu" to its limit, as written. */
 export type ResourceQuota = { kind: "ResourceQuota"; metadata: Meta; hard: Record<string, string> };
 
-export type Resource = Pod | ReplicaSet | Deployment | Service | ConfigMap | Secret | Node | LimitRange | ResourceQuota;
+export type JobSpec = {
+  completions: number;
+  parallelism: number;
+  backoffLimit: number;
+  activeDeadlineSeconds?: number;
+  ttlSecondsAfterFinished?: number;
+  template: PodTemplate;
+};
+
+export type Job = JobSpec & {
+  kind: "Job";
+  metadata: Meta;
+  /** Name of the CronJob that created it, if any. */
+  owner?: string;
+  /** Set once the Job is Complete or Failed. */
+  finished?: { type: "Complete" | "Failed"; reason?: string; message?: string; at: number; succeeded: number; failed: number };
+};
+
+export type CronJob = {
+  kind: "CronJob";
+  metadata: Meta;
+  schedule: string;
+  timeZone?: string;
+  suspend: boolean;
+  concurrencyPolicy: "Allow" | "Forbid" | "Replace";
+  successfulJobsHistoryLimit: number;
+  failedJobsHistoryLimit: number;
+  jobTemplate: JobSpec;
+  /** Clock of the last schedule time the controller has looked at. */
+  checkedAt: number;
+  lastScheduleTime?: number;
+};
+
+export type DaemonSet = {
+  kind: "DaemonSet";
+  metadata: Meta;
+  selector: Labels;
+  template: PodTemplate;
+  updateStrategy: { type: "RollingUpdate" | "OnDelete"; maxUnavailable: number | string };
+};
+
+export type AccessMode = "ReadWriteOnce" | "ReadOnlyMany" | "ReadWriteMany" | "ReadWriteOncePod";
+
+export type ClaimTemplate = { name: string; labels?: Labels; accessModes: AccessMode[]; storage: string; storageClassName?: string };
+
+export type StatefulSet = {
+  kind: "StatefulSet";
+  metadata: Meta;
+  serviceName: string;
+  replicas: number;
+  selector: Labels;
+  template: PodTemplate;
+  volumeClaimTemplates: ClaimTemplate[];
+  podManagementPolicy: "OrderedReady" | "Parallel";
+};
+
+export type ReclaimPolicy = "Delete" | "Retain";
+
+export type StorageClass = {
+  kind: "StorageClass";
+  metadata: Meta;
+  provisioner: string;
+  reclaimPolicy: ReclaimPolicy;
+  volumeBindingMode: "Immediate" | "WaitForFirstConsumer";
+  allowVolumeExpansion: boolean;
+};
+
+export type PersistentVolume = {
+  kind: "PersistentVolume";
+  metadata: Meta;
+  capacity: string;
+  accessModes: AccessMode[];
+  reclaimPolicy: ReclaimPolicy;
+  /** "" means no class. */
+  storageClassName: string;
+  hostPath?: { path: string };
+  /** Node a local volume lives on; Pods using it must run there. */
+  node?: string;
+  claimRef?: { namespace: string; name: string; uid: string };
+  phase: "Available" | "Bound" | "Released";
+  terminating?: boolean;
+};
+
+export type PersistentVolumeClaim = {
+  kind: "PersistentVolumeClaim";
+  metadata: Meta;
+  accessModes: AccessMode[];
+  storage: string;
+  /** undefined: no class and no default class; "": static PVs without a class only. */
+  storageClassName?: string;
+  /** The class was filled in from the default class, not written by the user. */
+  defaultedClass?: boolean;
+  volumeName?: string;
+  phase: "Pending" | "Bound";
+  /** Deleted while a Pod still uses it (kubernetes.io/pvc-protection). */
+  terminating?: boolean;
+};
+
+export type Resource =
+  | Pod
+  | ReplicaSet
+  | Deployment
+  | Service
+  | ConfigMap
+  | Secret
+  | Node
+  | LimitRange
+  | ResourceQuota
+  | Job
+  | CronJob
+  | DaemonSet
+  | StatefulSet
+  | StorageClass
+  | PersistentVolume
+  | PersistentVolumeClaim;
 export type Kind = Resource["kind"];
 
 export type ClusterEvent = {
@@ -219,6 +354,8 @@ export type Cluster = {
   events: ClusterEvent[];
   /** Simulated files (name -> text) for ls, cat, redirects and apply -f. */
   files: Record<string, string>;
+  /** Files inside containers and volumes: store key (see files.ts) -> path in the store -> text. */
+  volumes: Record<string, Record<string, string>>;
 };
 
 type WorkloadFixture = { name: string; namespace?: string; replicas: number; image: string; labels: Labels };

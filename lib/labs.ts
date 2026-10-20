@@ -1,5 +1,9 @@
 import {
   CLUSTER_SCOPED,
+  daemonSetStatus,
+  jobCounts,
+  jobStatus,
+  readFile,
   currentReplicaSet,
   decodeBase64,
   endpointsOf,
@@ -23,7 +27,7 @@ import {
 } from "@/lib/simulator";
 
 /** Owners whose Pods the pod-* validators can look at. A Deployment covers the Pods of all its ReplicaSets. */
-export type PodOwnerType = "Deployment" | "ReplicaSet";
+export type PodOwnerType = "Deployment" | "ReplicaSet" | "StatefulSet" | "DaemonSet" | "Job";
 
 /** Either one Pod by name, or every Pod of an owner. */
 type PodTarget = { podName?: string; ownerType?: PodOwnerType; ownerName?: string; namespace?: string };
@@ -32,8 +36,8 @@ export type ResourceField = "requests.cpu" | "requests.memory" | "limits.cpu" | 
 
 export type Validator =
   | { kind: "resource-exists" | "resource-absent"; resourceType: Kind; resourceName: string; namespace?: string }
-  | { kind: "replica-count"; resourceType: "Deployment" | "ReplicaSet"; resourceName: string; expectedValue: number; namespace?: string }
-  | { kind: "ready-pod-count"; ownerType: "Deployment" | "ReplicaSet"; ownerName: string; expectedValue: number; namespace?: string }
+  | { kind: "replica-count"; resourceType: "Deployment" | "ReplicaSet" | "StatefulSet"; resourceName: string; expectedValue: number; namespace?: string }
+  | { kind: "ready-pod-count"; ownerType: PodOwnerType; ownerName: string; expectedValue: number; namespace?: string }
   /** Ready Pods behind a Service. */
   | { kind: "endpoint-count"; serviceName: string; expectedValue: number; namespace?: string }
   | { kind: "service-type"; serviceName: string; expectedValue: ServiceType; namespace?: string }
@@ -70,7 +74,20 @@ export type Validator =
       namespace?: string;
     }
   /** Every matching Pod (at least one) has this QoS class. */
-  | ({ kind: "qos-class"; expectedValue: QosClass } & PodTarget);
+  | ({ kind: "qos-class"; expectedValue: QosClass } & PodTarget)
+  | { kind: "job-status"; jobName: string; expectedValue: "Complete" | "Failed" | "Running"; namespace?: string }
+  /** Pods of the Job that completed successfully. */
+  | { kind: "job-succeeded"; jobName: string; expectedValue: number; namespace?: string }
+  | { kind: "cronjob-suspended"; cronJobName: string; expectedValue: boolean; namespace?: string }
+  /** Ready Pods of the DaemonSet. */
+  | { kind: "daemonset-pods"; name: string; expectedValue: number; namespace?: string }
+  | { kind: "pvc-status"; claimName: string; expectedValue: "Bound" | "Pending"; namespace?: string }
+  | { kind: "pv-status"; pvName: string; expectedValue: "Available" | "Bound" | "Released" }
+  /**
+   * The text of a file inside every matching Pod (at least one), trailing newline ignored (echo adds one).
+   * `expectedValue: null` means the file does not exist.
+   */
+  | ({ kind: "file-content"; path: string; expectedValue: string | null } & PodTarget);
 
 export type LabDefinition = {
   id: string;
@@ -119,10 +136,8 @@ export function check(c: Cluster, v: Validator): boolean {
     case "replica-count":
       return find(c, v.resourceType, ns, v.resourceName)?.replicas === v.expectedValue;
     case "ready-pod-count": {
-      const owner = find(c, v.ownerType, ns, v.ownerName);
-      if (!owner) return false;
-      const sets = owner.kind === "Deployment" ? replicaSetsOf(c, owner) : [owner];
-      return sets.flatMap((rs) => podsOf(c, rs)).filter(isReady).length === v.expectedValue;
+      const pods = podsOfOwner(c, v.ownerType, ns, v.ownerName);
+      return !!pods && pods.filter(isReady).length === v.expectedValue;
     }
     case "endpoint-count": {
       const svc = find(c, "Service", ns, v.serviceName);
@@ -181,6 +196,33 @@ export function check(c: Cluster, v: Validator): boolean {
     case "qos-class": {
       const pods = targetPods(c, v);
       return pods.length > 0 && pods.every((p) => qosClass(p.container) === v.expectedValue);
+    }
+    case "job-status": {
+      const j = find(c, "Job", ns, v.jobName);
+      return !!j && jobStatus(j) === v.expectedValue;
+    }
+    case "job-succeeded": {
+      const j = find(c, "Job", ns, v.jobName);
+      return !!j && jobCounts(c, j).succeeded === v.expectedValue;
+    }
+    case "cronjob-suspended":
+      return find(c, "CronJob", ns, v.cronJobName)?.suspend === v.expectedValue;
+    case "daemonset-pods": {
+      const ds = find(c, "DaemonSet", ns, v.name);
+      return !!ds && daemonSetStatus(c, ds).ready === v.expectedValue;
+    }
+    case "pvc-status": {
+      const pvc = find(c, "PersistentVolumeClaim", ns, v.claimName);
+      return !!pvc && !pvc.terminating && pvc.phase === v.expectedValue;
+    }
+    case "pv-status": {
+      const pv = find(c, "PersistentVolume", "", v.pvName);
+      return !!pv && !pv.terminating && pv.phase === v.expectedValue;
+    }
+    case "file-content": {
+      const pods = targetPods(c, v);
+      const text = (p: Pod) => readFile(c, p, v.path)?.replace(/\n$/, "") ?? null;
+      return pods.length > 0 && pods.every((p) => text(p) === v.expectedValue);
     }
   }
 }

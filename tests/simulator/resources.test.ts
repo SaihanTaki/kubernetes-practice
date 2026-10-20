@@ -195,7 +195,7 @@ describe("LimitRange", () => {
 
   it("lists and describes limit ranges", () => {
     const c = withLimits();
-    expect(exec(c, "kubectl get limits").output).toMatch(/^NAME\s+CREATED AT\nmem\s+2026-01-01T00:00:00Z$/);
+    expect(exec(c, "kubectl get limits").output).toMatch(/^NAME\s+CREATED AT\nmem\s+2026-01-15T10:00:00Z$/);
     const out = exec(c, "kubectl describe limitrange mem").output;
     expect(out).toMatch(/^Type\s+Resource\s+Min\s+Max\s+Default Request\s+Default Limit\s+Max Limit\/Request Ratio$/m);
     expect(out).toMatch(/^Container\s+memory\s+64Mi\s+1Gi\s+256Mi\s+512Mi\s+-$/m);

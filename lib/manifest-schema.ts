@@ -93,9 +93,19 @@ const affinity = z.object({
     .optional(),
 });
 
+const volumeMount = z.object({
+  name,
+  mountPath: z.string().startsWith("/"),
+  readOnly: z.boolean().optional(),
+  subPath: z.string().regex(/^[^/]/, "must be a relative path").refine((p) => !p.split("/").includes(".."), "must not contain '..'").optional(),
+});
+
 const container = z.object({
   name,
   image: z.string().min(1),
+  command: z.array(z.string()).optional(),
+  args: z.array(z.string()).optional(),
+  volumeMounts: z.array(volumeMount).optional(),
   ports: z
     .array(z.object({ containerPort: port, name: portName.optional(), protocol: z.enum(["TCP", "UDP", "SCTP"]).optional() }))
     .optional(),
@@ -126,8 +136,27 @@ const container = z.object({
   resources: resources.optional(),
 });
 
+const keyToPath = z.object({ key: configKey, path: z.string().regex(/^[^/]/, "must be a relative path") });
+
+const volumeSources = ["emptyDir", "hostPath", "configMap", "secret", "persistentVolumeClaim"] as const;
+
+const volume = z
+  .object({
+    name,
+    emptyDir: z.object({ medium: z.enum(["", "Memory"]).optional(), sizeLimit: quantity(parseMemory).optional() }).optional(),
+    hostPath: z.object({ path: z.string().startsWith("/"), type: z.string().optional() }).optional(),
+    configMap: z.object({ name, items: z.array(keyToPath).optional() }).optional(),
+    secret: z.object({ secretName: name, items: z.array(keyToPath).optional() }).optional(),
+    persistentVolumeClaim: z.object({ claimName: name, readOnly: z.boolean().optional() }).optional(),
+  })
+  .refine((v) => volumeSources.filter((k) => v[k] !== undefined).length === 1, `must specify exactly one of ${volumeSources.join(", ")}`);
+
+const uniqueNames = (items?: { name: string }[]) => !items || new Set(items.map((i) => i.name)).size === items.length;
+
 const podSpec = z.object({
   containers: z.array(container).min(1),
+  volumes: z.array(volume).refine(uniqueNames, "volume names must be unique").optional(),
+  serviceAccountName: name.optional(),
   restartPolicy: z.enum(["Always", "OnFailure", "Never"]).optional(),
   nodeName: name.optional(),
   nodeSelector: labels.optional(),
@@ -154,13 +183,12 @@ const quotaHard = z
 
 const intOrPercent = z.union([z.number().int().min(0), z.string().regex(/^\d+%$/)]);
 
-const workloadSpec = z.object({
-  replicas: z.number().int().min(0),
-  selector: z.object({ matchLabels: labels }),
-  template: z.object({ metadata: z.object({ labels, annotations: annotations.optional() }), spec: podSpec }),
-});
+const selector = z.object({ matchLabels: labels });
+const podTemplate = z.object({ metadata: z.object({ labels, annotations: annotations.optional() }), spec: podSpec });
 
-const selectorMatchesTemplate = (s: z.infer<typeof workloadSpec>) =>
+const workloadSpec = z.object({ replicas: z.number().int().min(0), selector, template: podTemplate });
+
+const selectorMatchesTemplate = (s: { selector: { matchLabels: Record<string, string> }; template: { metadata: { labels: Record<string, string> } } }) =>
   Object.entries(s.selector.matchLabels).every(([k, v]) => s.template.metadata.labels[k] === v);
 const selectorError = { message: "selector does not match template labels", path: ["selector"] };
 
@@ -183,7 +211,7 @@ const strategy = z
 const serviceSpec = z
   .object({
     type: z.enum(["ClusterIP", "NodePort", "LoadBalancer"]).optional(),
-    clusterIP: z.string().regex(/^10\.96\.\d{1,3}\.\d{1,3}$/, "must be an IP in 10.96.0.0/16").optional(),
+    clusterIP: z.union([z.literal("None"), z.string().regex(/^10\.96\.\d{1,3}\.\d{1,3}$/, "must be an IP in 10.96.0.0/16 or None")]).optional(),
     selector: labels.optional(),
     ports: z
       .array(
@@ -204,7 +232,32 @@ const serviceSpec = z
   .refine((s) => s.ports.length === 1 || s.ports.every((p) => p.name), {
     message: "ports need a name when there is more than one",
     path: ["ports"],
+  })
+  .refine((s) => !(s.clusterIP === "None" && (s.type ?? "ClusterIP") !== "ClusterIP"), {
+    message: "Invalid value: \"None\": may not be set to 'None' for NodePort or LoadBalancer services",
+    path: ["clusterIP"],
   });
+
+const accessMode = z.enum(["ReadWriteOnce", "ReadOnlyMany", "ReadWriteMany", "ReadWriteOncePod"]);
+const storage = quantity(parseMemory);
+
+const claimSpec = z.object({
+  accessModes: z.array(accessMode).min(1),
+  resources: z.object({ requests: z.object({ storage }) }),
+  storageClassName: z.string().optional(),
+  volumeName: name.optional(),
+});
+
+const jobSpec = z.object({
+  completions: z.number().int().min(1).optional(),
+  parallelism: z.number().int().min(0).optional(),
+  backoffLimit: z.number().int().min(0).optional(),
+  activeDeadlineSeconds: z.number().int().min(1).optional(),
+  ttlSecondsAfterFinished: z.number().int().min(0).optional(),
+  template: z.object({ metadata: z.object({ labels: labels.optional(), annotations: annotations.optional() }).optional(), spec: podSpec }),
+});
+
+const clusterMetadata = z.object({ name, labels: labels.optional(), annotations: annotations.optional() });
 
 /** A deliberately small subset of the real Kubernetes schemas, covering what the chapters teach. */
 export const manifestSchema = z.discriminatedUnion("kind", [
@@ -236,6 +289,78 @@ export const manifestSchema = z.discriminatedUnion("kind", [
     spec: workloadSpec.extend({ strategy: strategy.optional() }).refine(selectorMatchesTemplate, selectorError),
   }),
   z.object({ apiVersion: z.literal("v1"), kind: z.literal("Service"), metadata, spec: serviceSpec }),
+  z.object({ apiVersion: z.literal("batch/v1"), kind: z.literal("Job"), metadata, spec: jobSpec }),
+  z.object({
+    apiVersion: z.literal("batch/v1"),
+    kind: z.literal("CronJob"),
+    metadata,
+    spec: z.object({
+      schedule: z.string().min(1),
+      timeZone: z.string().optional(),
+      suspend: z.boolean().optional(),
+      concurrencyPolicy: z.enum(["Allow", "Forbid", "Replace"]).optional(),
+      successfulJobsHistoryLimit: z.number().int().min(0).optional(),
+      failedJobsHistoryLimit: z.number().int().min(0).optional(),
+      startingDeadlineSeconds: z.number().int().min(0).optional(),
+      jobTemplate: z.object({ metadata: z.object({ labels: labels.optional(), annotations: annotations.optional() }).optional(), spec: jobSpec }),
+    }),
+  }),
+  z.object({
+    apiVersion: z.literal("apps/v1"),
+    kind: z.literal("DaemonSet"),
+    metadata,
+    spec: z
+      .object({
+        selector,
+        template: podTemplate,
+        updateStrategy: z
+          .object({
+            type: z.enum(["RollingUpdate", "OnDelete"]),
+            rollingUpdate: z.object({ maxUnavailable: intOrPercent.optional(), maxSurge: intOrPercent.optional() }).optional(),
+          })
+          .optional(),
+      })
+      .refine(selectorMatchesTemplate, selectorError),
+  }),
+  z.object({
+    apiVersion: z.literal("apps/v1"),
+    kind: z.literal("StatefulSet"),
+    metadata,
+    spec: z
+      .object({
+        serviceName: z.string().optional(),
+        replicas: z.number().int().min(0).optional(),
+        selector,
+        template: podTemplate,
+        podManagementPolicy: z.enum(["OrderedReady", "Parallel"]).optional(),
+        updateStrategy: z.object({ type: z.enum(["RollingUpdate", "OnDelete"]) }).optional(),
+        volumeClaimTemplates: z.array(z.object({ metadata: z.object({ name, labels: labels.optional() }), spec: claimSpec })).refine((t) => uniqueNames(t.map((x) => x.metadata)), "claim template names must be unique").optional(),
+      })
+      .refine(selectorMatchesTemplate, selectorError),
+  }),
+  z.object({
+    apiVersion: z.literal("storage.k8s.io/v1"),
+    kind: z.literal("StorageClass"),
+    metadata: clusterMetadata,
+    provisioner: z.string().min(1),
+    reclaimPolicy: z.enum(["Delete", "Retain"]).optional(),
+    volumeBindingMode: z.enum(["Immediate", "WaitForFirstConsumer"]).optional(),
+    allowVolumeExpansion: z.boolean().optional(),
+    parameters: z.record(z.string(), z.string()).optional(),
+  }),
+  z.object({
+    apiVersion: z.literal("v1"),
+    kind: z.literal("PersistentVolume"),
+    metadata: clusterMetadata,
+    spec: z.object({
+      capacity: z.object({ storage }),
+      accessModes: z.array(accessMode).min(1),
+      persistentVolumeReclaimPolicy: z.enum(["Delete", "Retain"]).optional(),
+      storageClassName: z.string().optional(),
+      hostPath: z.object({ path: z.string().startsWith("/"), type: z.string().optional() }),
+    }),
+  }),
+  z.object({ apiVersion: z.literal("v1"), kind: z.literal("PersistentVolumeClaim"), metadata, spec: claimSpec }),
   z.object({ apiVersion: z.literal("v1"), kind: z.literal("ConfigMap"), metadata, data: z.record(configKey, z.string()).optional() }),
   z.object({
     apiVersion: z.literal("v1"),

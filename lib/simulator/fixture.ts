@@ -1,5 +1,6 @@
 import { containerName, converge, crashes, defaultNodes, list, meta } from "./cluster";
 import { run } from "./kubectl";
+import { defaultStorageClass } from "./storage";
 import type { Cluster, Fixture, Labels } from "./types";
 
 const FIXTURE_AGE = 600;
@@ -17,8 +18,10 @@ export function createCluster(fixture: Fixture = {}): Cluster {
     resources: [],
     events: [],
     files: { ...fixture.files },
+    volumes: {},
   };
   c.nodes = defaultNodes(c);
+  c.resources.push(defaultStorageClass(c));
   const ns = (n?: string) => n ?? "default";
   for (const d of fixture.deployments ?? []) {
     c.resources.push({

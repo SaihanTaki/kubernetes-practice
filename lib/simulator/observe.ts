@@ -1,7 +1,8 @@
 import { age, fail, table, type Parsed } from "./cli";
-import { configError, crashes, find, hash, isReady, list, podsOfOwner, probeFailure, pullError, SECONDS_PER_COMMAND } from "./cluster";
+import { configError, crashes, find, hash, isReady, list, mountError, podsOfOwner, probeFailure, pullError, SECONDS_PER_COMMAND } from "./cluster";
 import { imageInfo } from "./images";
 import { MI, parseCpu, parseMemory } from "./quantity";
+import { runProgram } from "./shell";
 import type { Cluster, ClusterEvent, Pod, PodOwnerKind, Probe } from "./types";
 
 /** Warnings the kubelet would have recorded for the Pod's current state; derived, not stored. */
@@ -12,6 +13,8 @@ export function kubeletEvents(c: Cluster, p: Pod): ClusterEvent[] {
     events.push(["Warning", "Failed", pullError(p.image)!], ["Normal", "BackOff", `Back-off pulling image "${p.image}"`]);
   }
   if (p.status === "CreateContainerConfigError") events.push(["Warning", "Failed", `Error: ${configError(c, p)}`]);
+  const mount = p.status === "ContainerCreating" && p.node ? mountError(c, p) : null;
+  if (mount) events.push(["Warning", "FailedMount", mount]);
   if (p.status === "Running" || p.status === "CrashLoopBackOff") {
     const failures: [string, Probe | undefined][] = [
       ["Startup", p.container.startupProbe],
@@ -64,10 +67,17 @@ export function getEvents(c: Cluster, p: Parsed): string {
   return table([[...(p.allNamespaces ? ["NAMESPACE"] : []), "LAST SEEN", "TYPE", "REASON", "OBJECT", "MESSAGE"], ...rows]);
 }
 
-/** Workload types `kubectl logs <type>/<name>` accepts. Part B adds jobs here. */
+/** Workload types `kubectl logs <type>/<name>` and `kubectl exec <type>/<name>` accept. */
 export const LOG_OWNERS: Record<string, "Deployment" | PodOwnerKind> = {
   deploy: "Deployment", deployment: "Deployment", deployments: "Deployment",
   rs: "ReplicaSet", replicaset: "ReplicaSet", replicasets: "ReplicaSet",
+  job: "Job", jobs: "Job",
+  ds: "DaemonSet", daemonset: "DaemonSet", daemonsets: "DaemonSet",
+  sts: "StatefulSet", statefulset: "StatefulSet", statefulsets: "StatefulSet",
+};
+
+const OWNER_API: Record<"Deployment" | PodOwnerKind, string> = {
+  Deployment: "deployments.apps", ReplicaSet: "replicasets.apps", Job: "jobs.batch", DaemonSet: "daemonsets.apps", StatefulSet: "statefulsets.apps",
 };
 
 const WAITING: Partial<Record<Pod["status"], string>> = {
@@ -77,17 +87,22 @@ const WAITING: Partial<Record<Pod["status"], string>> = {
   CreateContainerConfigError: "CreateContainerConfigError",
 };
 
+/** The Pod named by `<pod>`, `pod/<name>` or `<workload>/<name>` (first ready Pod, like kubectl picks it). */
+export function podByRef(c: Cluster, namespace: string, ref: string, verb: string): { pod: Pod; note?: string } {
+  const [type, name] = ref.includes("/") ? ref.split("/") : ["pod", ref];
+  if (["po", "pod", "pods"].includes(type)) return { pod: find(c, "Pod", namespace, name) ?? fail(`Error from server (NotFound): pods "${name}" not found`) };
+  const kind = Object.hasOwn(LOG_OWNERS, type) ? LOG_OWNERS[type] : fail(`error: cannot ${verb} ${type}, use a pod or a deployment, replicaset, job, daemonset or statefulset`);
+  const pods = podsOfOwner(c, kind, namespace, name) ?? fail(`Error from server (NotFound): ${OWNER_API[kind]} "${name}" not found`);
+  if (!pods.length) fail(`error: timed out waiting for the condition`);
+  const sorted = [...pods].sort((a, b) => Number(isReady(b)) - Number(isReady(a)) || (a.metadata.name < b.metadata.name ? -1 : 1));
+  return { pod: sorted[0], note: pods.length > 1 ? `Found ${pods.length} pods, using pod/${sorted[0].metadata.name}` : undefined };
+}
+
 function logPod(c: Cluster, p: Parsed): { pod: Pod; note?: string } {
   const [ref, extra] = p.args;
   if (!ref) fail("error: expected 'logs POD_NAME' or 'logs TYPE/NAME', e.g. kubectl logs web or kubectl logs deployment/web");
   if (extra) fail(`error: unexpected argument "${extra}"`);
-  const [type, name] = ref.includes("/") ? ref.split("/") : ["pod", ref];
-  if (["po", "pod", "pods"].includes(type)) return { pod: find(c, "Pod", p.namespace, name) ?? fail(`Error from server (NotFound): pods "${name}" not found`) };
-  const kind = Object.hasOwn(LOG_OWNERS, type) ? LOG_OWNERS[type] : fail(`error: cannot get logs from ${type}, use a pod, deployment/<name> or replicaset/<name>`);
-  const pods = podsOfOwner(c, kind, p.namespace, name) ?? fail(`Error from server (NotFound): ${kind.toLowerCase()}s.apps "${name}" not found`);
-  if (!pods.length) fail(`error: timed out waiting for the condition`);
-  const sorted = [...pods].sort((a, b) => Number(isReady(b)) - Number(isReady(a)) || (a.metadata.name < b.metadata.name ? -1 : 1));
-  return { pod: sorted[0], note: pods.length > 1 ? `Found ${pods.length} pods, using pod/${sorted[0].metadata.name}` : undefined };
+  return podByRef(c, p.namespace, ref, "get logs from");
 }
 
 export function logs(c: Cluster, p: Parsed): string {
@@ -98,7 +113,7 @@ export function logs(c: Cluster, p: Parsed): string {
   if (waiting) fail(`Error from server (BadRequest): container "${ctr}" in pod "${pod.metadata.name}" is waiting to start: ${waiting}`);
   if (p.previous && !pod.restarts) fail(`Error from server (BadRequest): previous terminated container "${ctr}" in pod "${pod.metadata.name}" not found`);
   const info = imageInfo(pod.image);
-  let lines = info.logs?.(pod, info.tag) ?? [];
+  let lines = runProgram(pod.image, pod.container)?.logs ?? info.logs?.(pod, info.tag) ?? [];
   if (p.tail !== undefined) lines = p.tail ? lines.slice(-p.tail) : [];
   return [...(note ? [note] : []), ...lines].join("\n");
 }
