@@ -1,4 +1,5 @@
 import type { MDXComponents } from "mdx/types";
+import Link from "next/link";
 
 // Prose keeps a readable ~70ch measure; labs, diagrams, and quizzes are separate components and use the full width.
 const measure = "max-w-[70ch]";
@@ -9,7 +10,11 @@ const components: MDXComponents = {
   p: (props) => <p className={`${measure} my-4 leading-[1.75]`} {...props} />,
   ul: (props) => <ul className={`${measure} my-4 list-disc space-y-2 pl-6 leading-[1.75]`} {...props} />,
   ol: (props) => <ol className={`${measure} my-4 list-decimal space-y-2 pl-6 leading-[1.75]`} {...props} />,
-  a: (props) => <a className="text-accent underline decoration-1 underline-offset-4 hover:decoration-2" {...props} />,
+  a: ({ href = "", ...props }) => {
+    const className = "text-accent underline decoration-1 underline-offset-4 hover:decoration-2";
+    // Link adds the basePath to site-internal links; plain <a> would not.
+    return href.startsWith("/") ? <Link href={href} className={className} {...props} /> : <a href={href} className={className} {...props} />;
+  },
   strong: (props) => <strong className="font-semibold" {...props} />,
   code: (props) => <code className="rounded bg-code px-1.5 py-0.5 font-mono text-[0.88em]" {...props} />,
   table: (props) => (

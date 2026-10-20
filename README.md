@@ -37,33 +37,31 @@ pnpm exec playwright install chromium
 
 ## Deploy
 
-`pnpm build` writes a fully static site to `out/`. Upload that folder to any static host (GitHub Pages, Netlify, Cloudflare Pages, an S3 bucket). To preview it locally:
+`pnpm build` writes a fully static site to `out/`. Upload that folder to any static host. To preview it locally:
 
 ```bash
 pnpm build
 pnpm serve out
 ```
 
+### GitHub Pages
+
+`.github/workflows/pages.yml` tests, builds, and publishes the site on every push to `main`.
+
+1. In the repository, open Settings → Pages and set Source to **GitHub Actions**.
+2. Push to `main`. The site appears at `https://<user>.github.io/<repo>/`.
+
+The workflow sets `BASE_PATH=/<repo>` so assets and links get that prefix. Builds without it (local, tests) serve from `/`.
+
 ## Simulator
 
-Supported commands:
-
-```text
-kubectl get <pods|replicasets|deployments|namespaces|nodes> [name]
-kubectl describe <pod|replicaset|deployment> <name>
-kubectl scale <deployment|replicaset> <name> --replicas=<n>
-kubectl delete <pod|deployment> <name>
-kubectl help
-clear
-```
-
-Flags: `-n/--namespace`, `-A/--all-namespaces`, `-l/--selector key=value`, `-o yaml`. Short names (`po`, `rs`, `deploy`, `ns`) and the `type/name` form work.
+The terminal is a simulated `kubectl`; input is never executed. Type `kubectl help` in any lab for the full list. It models Pods, ReplicaSets, Deployments, Services, ConfigMaps, Secrets, and Namespaces, including `apply -f`, labels and annotations, rolling updates and rollbacks, and readiness/liveness/startup probes.
 
 Known limits, on purpose:
 
-- Only Pods, ReplicaSets, and Deployments are modelled. No Services, ConfigMaps, or Secrets yet.
-- No `apply`, `create`, `logs`, `rollout`, or events.
-- New Pods show `ContainerCreating` for one command, then become `Running`. Real clusters take a variable amount of time.
+- No `logs`, `exec`, `edit`, `port-forward`, volumes, or `revisionHistoryLimit`.
+- New Pods show `ContainerCreating` for one command; a rolling update moves one step per command.
+- `kubectl rollout status` on a stuck rollout fails at once instead of after the progress deadline.
 - Pods are spread over two fake worker nodes. There is no real scheduling.
 - At most 20 replicas per workload.
 - Output follows real `kubectl` formatting but is not identical in every detail.
