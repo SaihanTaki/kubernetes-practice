@@ -7,6 +7,9 @@ const content: Record<string, () => Promise<{ default: React.ComponentType }>> =
   pods: () => import("@/content/chapters/pods.mdx"),
   replicasets: () => import("@/content/chapters/replicasets.mdx"),
   deployments: () => import("@/content/chapters/deployments.mdx"),
+  namespaces: () => import("@/content/chapters/namespaces.mdx"),
+  imperative: () => import("@/content/chapters/imperative.mdx"),
+  declarative: () => import("@/content/chapters/declarative.mdx"),
 };
 
 type Props = { params: Promise<{ slug: string }> };
@@ -33,7 +36,7 @@ export default async function ChapterPage({ params }: Props) {
   return (
     <article className="max-w-none">
       <p className="text-sm text-muted">
-        Chapter {index + 1} · {chapter.difficulty}
+        {chapter.section} · Chapter {index + 1} · {chapter.difficulty}
       </p>
       <h1 className="mt-1 text-3xl font-semibold">{chapter.title}</h1>
       <p className="mt-3 text-lg text-muted">{chapter.summary}</p>

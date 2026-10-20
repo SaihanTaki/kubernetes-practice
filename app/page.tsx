@@ -1,5 +1,5 @@
 import Link from "next/link";
-import { chapters } from "@/content/chapters";
+import { chapters, sections } from "@/content/chapters";
 
 export default function Home() {
   return (
@@ -10,26 +10,37 @@ export default function Home() {
         reload the page and every exercise starts fresh.
       </p>
 
-      <h2 className="mt-10 text-xl font-semibold">Chapters</h2>
-      <ol className="mt-4 divide-y divide-border border-y border-border">
-        {chapters.map((c, i) => (
-          <li key={c.slug} className="flex gap-4 py-4">
-            <span className="w-6 shrink-0 font-mono text-muted">{i + 1}</span>
-            <div>
-              {c.ready ? (
-                <Link href={`/chapters/${c.slug}`} className="font-medium text-accent underline-offset-4 hover:underline">
-                  {c.title}
-                </Link>
-              ) : (
-                <span className="font-medium">
-                  {c.title} <span className="text-sm font-normal text-muted">(coming soon)</span>
-                </span>
-              )}
-              <p className="mt-1 text-sm text-muted">{c.summary}</p>
-            </div>
-          </li>
-        ))}
-      </ol>
+      {sections.map((section) => (
+        <section key={section} aria-labelledby={`section-${section}`}>
+          <h2 id={`section-${section}`} className="mt-10 text-xl font-semibold">
+            {section}
+          </h2>
+          <ol className="mt-4 divide-y divide-border border-y border-border">
+            {chapters
+              .filter((c) => c.section === section)
+              .map((c) => (
+                <li key={c.slug} className="flex gap-4 py-4">
+                  <span className="w-6 shrink-0 font-mono text-muted">{chapters.indexOf(c) + 1}</span>
+                  <div>
+                    {c.ready ? (
+                      <Link
+                        href={`/chapters/${c.slug}`}
+                        className="font-medium text-accent underline-offset-4 hover:underline"
+                      >
+                        {c.title}
+                      </Link>
+                    ) : (
+                      <span className="font-medium">
+                        {c.title} <span className="text-sm font-normal text-muted">(coming soon)</span>
+                      </span>
+                    )}
+                    <p className="mt-1 text-sm text-muted">{c.summary}</p>
+                  </div>
+                </li>
+              ))}
+          </ol>
+        </section>
+      ))}
 
       <h2 className="mt-10 text-xl font-semibold">Practice on your own</h2>
       <p className="mt-2 text-muted">

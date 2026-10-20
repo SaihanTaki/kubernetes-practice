@@ -1,4 +1,5 @@
 import { expect, test, type Page } from "@playwright/test";
+import { data as declarative } from "../../content/chapters/declarative.data";
 
 const errors: string[] = [];
 test.beforeEach(({ page }) => {
@@ -23,7 +24,8 @@ test("home links every chapter, playground, and cheatsheet", async ({ page }) =>
   await page.goto("/");
   await noHorizontalOverflow(page);
   await expect(page.getByText("(coming soon)")).toHaveCount(0);
-  for (const name of ["Kubernetes Architecture", "Pods", "ReplicaSets", "Deployments"]) {
+  await expect(page.getByRole("heading", { level: 2, name: "Basics" })).toBeVisible();
+  for (const name of ["Kubernetes Architecture", "Pods", "ReplicaSets", "Deployments", "Namespaces", "Imperative Commands", "Declarative YAML"]) {
     await expect(page.getByRole("main").getByRole("link", { name, exact: true })).toBeVisible();
   }
   await page.getByRole("link", { name: "Deployments" }).click();
@@ -39,6 +41,9 @@ for (const [slug, title] of [
   ["pods", "Pods"],
   ["replicasets", "ReplicaSets"],
   ["deployments", "Deployments"],
+  ["namespaces", "Namespaces"],
+  ["imperative", "Imperative Commands"],
+  ["declarative", "Declarative YAML"],
 ]) {
   test(`chapter ${slug} renders`, async ({ page }) => {
     await page.goto(`/chapters/${slug}`);
@@ -195,4 +200,21 @@ test("theme can be chosen and is remembered", async ({ page }) => {
   await page.reload();
   await expect(select).toHaveValue("system");
   expect(await page.evaluate(() => document.documentElement.dataset.theme)).toBeUndefined();
+});
+
+test("declarative lab: fix the file in the editor, then apply", async ({ page }) => {
+  await page.goto("/chapters/declarative");
+  const lab = page.getByRole("region", { name: /Lab:/ });
+  await command(page, "kubectl apply -f web.yaml");
+  await expect(lab.getByRole("log")).toContainText("selector does not match template labels");
+
+  const fixed = declarative.labs[0].solutionFiles!["web.yaml"];
+  await lab.getByLabel("Contents of web.yaml").fill(fixed);
+  await command(page, "kubectl apply -f web.yaml");
+  await expect(lab.getByRole("log")).toContainText("deployment.apps/web created");
+  await command(page, "kubectl get pods");
+  await expect(lab.getByText("Lab complete.")).toBeVisible();
+
+  await page.getByRole("button", { name: "Reset lab" }).click();
+  await expect(lab.getByLabel("Contents of web.yaml")).not.toHaveValue(fixed);
 });

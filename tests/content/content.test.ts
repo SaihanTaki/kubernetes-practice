@@ -11,8 +11,8 @@ import { createCluster, run } from "@/lib/simulator";
 const unique = (ids: string[]) => expect(new Set(ids).size).toBe(ids.length);
 
 describe("chapters", () => {
-  it("has the four launch chapters in order", () => {
-    expect(chapters.map((c) => c.slug)).toEqual(["architecture", "pods", "replicasets", "deployments"]);
+  it("has the Basics chapters in order", () => {
+    expect(chapters.map((c) => c.slug)).toEqual(["architecture", "pods", "replicasets", "deployments", "namespaces", "imperative", "declarative"]);
   });
 
   it.each(chapters.filter((c) => c.ready))("$slug has content, objectives, and a YAML question", (c) => {
@@ -77,6 +77,7 @@ describe("labs", () => {
   it.each(labs)("$id starts incomplete and its solution completes it", (lab) => {
     let c = createCluster(lab.fixture);
     expect(lab.objectives.every((o) => check(c, o.validator))).toBe(false);
+    c = { ...c, files: { ...c.files, ...lab.solutionFiles } };
     for (const cmd of lab.solution) {
       const r = run(c, cmd);
       expect(r.error, `${cmd}: ${r.output}`).toBe(false);
