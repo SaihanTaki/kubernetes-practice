@@ -384,4 +384,154 @@ export const quiz: QuizQuestion[] = [
     explanation:
       "A failing readiness probe never restarts the container. It keeps the Pod not ready and out of Service endpoints. describe pod shows Unhealthy events with connection refused on port 80.",
   },
+  {
+    id: "troubleshooting-pull-states",
+    topic: "Images",
+    difficulty: "beginner",
+    question: "A Pod switches between ErrImagePull and ImagePullBackOff. What is the difference?",
+    options: [
+      { id: "a", text: "ErrImagePull is a failed pull attempt; ImagePullBackOff is the wait before the kubelet tries again" },
+      { id: "b", text: "ErrImagePull means a wrong tag; ImagePullBackOff means missing registry credentials" },
+      { id: "c", text: "ErrImagePull comes from the scheduler; ImagePullBackOff from the kubelet" },
+      { id: "d", text: "ImagePullBackOff means the kubelet has given up for good" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "Both name the same problem. The kubelet tries, fails (ErrImagePull), then backs off with growing delays (ImagePullBackOff) and keeps retrying. The Failed event gives the actual cause, such as a missing tag or a private registry without credentials.",
+  },
+  {
+    id: "troubleshooting-one-at-a-time",
+    topic: "Method",
+    difficulty: "intermediate",
+    question: "You lower a Pod's CPU request and it leaves Pending. What should you do next?",
+    options: [
+      { id: "a", text: "Nothing; the Pod was only Pending, so it is fixed" },
+      { id: "b", text: "Delete the Pod so it starts clean" },
+      { id: "c", text: "Run kubectl get pods again, because the next stage (image pull, config, app, readiness) can fail in turn" },
+      { id: "d", text: "Restart the kubelet on its node" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "A Pod shows one problem at a time in lifecycle order: scheduling, image pull, container config, the running app. Fixing one can reveal the next. You are done when the client request succeeds.",
+  },
+  {
+    id: "troubleshooting-config-no-logs",
+    topic: "Configuration",
+    difficulty: "intermediate",
+    question: "A Pod shows CreateContainerConfigError and kubectl logs returns nothing. Why, and what happens after you create the missing key?",
+    options: [
+      { id: "a", text: "Logs are hidden for security; you must delete the Pod after the fix" },
+      { id: "b", text: "The container was never created, so there are no logs; the kubelet retries on its own once the key exists" },
+      { id: "c", text: "The app crashed before writing; use --previous" },
+      { id: "d", text: "The Pod is not scheduled yet; it moves to Pending after the fix" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "The kubelet cannot build the container's environment, so no container ever starts and there is nothing to log, previous or not. It keeps retrying, so creating the key or fixing the reference is enough.",
+  },
+  {
+    id: "troubleshooting-logs-deployment",
+    topic: "Logs",
+    difficulty: "beginner",
+    question: "What does kubectl logs deployment/web show?",
+    options: [
+      { id: "a", text: "The Deployment's rollout history" },
+      { id: "b", text: "Logs of every Pod of the Deployment merged together" },
+      { id: "c", text: "The events of the Deployment" },
+      { id: "d", text: "The logs of one Pod that kubectl picks from the Deployment" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "kubectl resolves the Deployment to its Pods and prints the logs of one of them, which saves looking up the generated Pod name. Events come from describe or get events, and history from kubectl rollout history.",
+  },
+  {
+    id: "troubleshooting-events-selector",
+    topic: "Events",
+    difficulty: "intermediate",
+    question: "Which command lists only the events for Pod web-1?",
+    options: [
+      { id: "a", text: "kubectl get events --field-selector involvedObject.name=web-1" },
+      { id: "b", text: "kubectl get events -l name=web-1" },
+      { id: "c", text: "kubectl logs web-1 --events" },
+      { id: "d", text: "kubectl get pod web-1 -o events" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "Events record the object they are about in involvedObject, and a field selector filters on it. Events do not carry the Pod's labels, so -l does not work. describe pod shows the same events at the bottom.",
+  },
+  {
+    id: "troubleshooting-oom-compare",
+    topic: "Resources",
+    difficulty: "intermediate",
+    question: "A container was OOMKilled. Which command shows its memory use now, to compare with its limit?",
+    options: [
+      { id: "a", text: "kubectl describe node" },
+      { id: "b", text: "kubectl top pods" },
+      { id: "c", text: "kubectl get events" },
+      { id: "d", text: "kubectl logs --previous" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "kubectl top pods shows current CPU and memory use from the metrics pipeline. describe node shows what is requested and limited on a node, which is what you check for Pending with Insufficient memory, not live use.",
+  },
+  {
+    id: "troubleshooting-pod-ip",
+    topic: "Request path",
+    difficulty: "advanced",
+    question: "From another Pod, wget http://10.244.1.7:8080/ (a web Pod IP) works, endpoints for Service web list 10.244.1.7:8080, but wget http://web times out. What do you check?",
+    options: [
+      { id: "a", text: "The Service targetPort" },
+      { id: "b", text: "The Pod's readiness probe" },
+      { id: "c", text: "NetworkPolicies in the namespace" },
+      { id: "d", text: "The image tag" },
+    ],
+    correctOptionId: "c",
+    explanation:
+      "The app answers directly and the endpoints are ready on the right port, so the Service is wired correctly. A timeout means dropped packets, which points at a NetworkPolicy. A wrong targetPort would show in the endpoints and give connection refused.",
+  },
+  {
+    id: "troubleshooting-egress-dns",
+    topic: "Networking",
+    difficulty: "advanced",
+    question: "After adding a NetworkPolicy that restricts egress from frontend Pods to the api Pods only, wget http://api fails with bad address. Why?",
+    options: [
+      { id: "a", text: "Egress policies also delete the api Service" },
+      { id: "b", text: "The api Pods lost their readiness" },
+      { id: "c", text: "NetworkPolicy blocks ingress, never egress" },
+      { id: "d", text: "DNS lookups are egress too, so the policy needs a rule allowing traffic to the cluster DNS" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "Resolving api means a query to the DNS Pods, and the policy now drops it, so the name never resolves. Allow egress to DNS on port 53 alongside the api rule.",
+  },
+  {
+    id: "troubleshooting-configmap-restart",
+    topic: "Configuration",
+    difficulty: "intermediate",
+    question: "You fix a misspelled key in a ConfigMap that a Deployment loads with envFrom and apply it. The running Pods still crash. What is missing?",
+    options: [
+      { id: "a", text: "kubectl rollout restart deployment/<name>, because environment variables are read only when a container starts" },
+      { id: "b", text: "Nothing; the Pods pick up the change within a minute" },
+      { id: "c", text: "Delete and recreate the ConfigMap with a new name" },
+      { id: "d", text: "kubectl apply the Deployment with --force" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "Variables from a ConfigMap are copied into the container when it starts. Changing the ConfigMap does not touch the Pod template, so nothing rolls out by itself. A rollout restart creates new Pods that read the fixed values.",
+  },
+  {
+    id: "troubleshooting-forbidden-sa",
+    topic: "RBAC",
+    difficulty: "intermediate",
+    question: "An app in Pods using ServiceAccount reporter in namespace shop gets Forbidden. Which identity do you pass to kubectl auth can-i --as?",
+    options: [
+      { id: "a", text: "reporter" },
+      { id: "b", text: "system:serviceaccount:shop:reporter" },
+      { id: "c", text: "shop/reporter" },
+      { id: "d", text: "The name of the Pod" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "RBAC sees a ServiceAccount as system:serviceaccount:<namespace>:<name>, and the Forbidden message prints that username. Plain reporter would be checked as a human user of that name.",
+  },
 ];
