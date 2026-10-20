@@ -11,6 +11,7 @@ export function Quiz({ id }: { id: string }) {
 }
 
 const button = "min-h-11 rounded-md border border-border px-4 enabled:hover:bg-code disabled:opacity-50";
+const primary = "min-h-11 rounded-md bg-accent-fill px-4 font-medium text-white enabled:hover:opacity-90 disabled:opacity-50";
 
 function QuizView({ questions }: { questions: QuizQuestion[] }) {
   const [answers, setAnswers] = useState<Record<string, string>>({});
@@ -22,10 +23,10 @@ function QuizView({ questions }: { questions: QuizQuestion[] }) {
   const picked = answers[q.id];
 
   return (
-    <section className="my-8 rounded-lg border border-border bg-surface p-4" aria-label="Quiz">
+    <section className="my-8 rounded-lg border border-border bg-surface p-5" aria-label="Quiz">
       <div className="flex flex-wrap items-baseline justify-between gap-2 text-sm text-muted">
-        <span>
-          Question {index + 1} of {questions.length}
+        <span className="font-mono">
+          question {index + 1} / {questions.length}
         </span>
         <span>
           {answered} answered, {correct} correct
@@ -36,8 +37,8 @@ function QuizView({ questions }: { questions: QuizQuestion[] }) {
       </div>
 
       <fieldset key={q.id} disabled={!!picked} className="mt-5">
-        <legend className="font-medium">{q.question}</legend>
-        <p className="mt-1 text-xs text-muted">
+        <legend className="text-lg font-medium leading-7">{q.question}</legend>
+        <p className="mt-1 font-mono text-xs text-muted">
           {q.topic} · {q.difficulty}
         </p>
         <div className="mt-3 grid gap-2">
@@ -72,7 +73,7 @@ function QuizView({ questions }: { questions: QuizQuestion[] }) {
         <button type="button" className={button} disabled={index === 0} onClick={() => setIndex(index - 1)}>
           Previous
         </button>
-        <button type="button" className={button} disabled={index === questions.length - 1} onClick={() => setIndex(index + 1)}>
+        <button type="button" className={primary} disabled={index === questions.length - 1} onClick={() => setIndex(index + 1)}>
           Next question
         </button>
         <button

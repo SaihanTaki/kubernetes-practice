@@ -114,7 +114,11 @@ function DiagramView({ def }: { def: DiagramDef }) {
         <div className="mt-4">
           <div className="flex flex-wrap gap-2">
             {stepIndex === null ? (
-              <button type="button" className={button} onClick={() => setStepIndex(0)}>
+              <button
+                type="button"
+                className="min-h-11 rounded-md bg-accent-fill px-4 font-medium text-white hover:opacity-90"
+                onClick={() => setStepIndex(0)}
+              >
                 Start walkthrough
               </button>
             ) : (

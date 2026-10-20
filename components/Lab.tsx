@@ -14,19 +14,16 @@ export function Lab({ id }: { id: string }) {
 }
 
 function LabView({ lab }: { lab: LabDefinition }) {
-  const { id } = lab;
   const { cluster, execute, reset, epoch, setFile } = useCluster(lab.fixture);
   const done = lab.objectives.map((o) => check(cluster, o.validator));
   const complete = done.every(Boolean);
 
   return (
-    <section className="my-8 rounded-lg border border-border bg-surface p-4" aria-labelledby={`lab-${id}`}>
-      <div className="flex flex-wrap items-baseline justify-between gap-2">
-        <h3 id={`lab-${id}`} className="text-lg font-semibold">
-          Lab: {lab.title}
-        </h3>
-        <span className="text-sm text-muted">{lab.difficulty}</span>
-      </div>
+    <section className="my-10 rounded-lg border border-border bg-surface p-5" aria-label={`Lab: ${lab.title}`}>
+      <p className="font-mono text-xs text-muted">lab · {lab.difficulty}</p>
+      <h3 className="mt-1 text-xl font-semibold tracking-tight">
+        {lab.title}
+      </h3>
       <p className="mt-2">{lab.scenario}</p>
 
       <div className="mt-4 grid gap-6 lg:grid-cols-2">

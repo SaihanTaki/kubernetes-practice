@@ -26,9 +26,9 @@ test("home links every chapter, playground, and cheatsheet", async ({ page }) =>
   await expect(page.getByText("(coming soon)")).toHaveCount(0);
   await expect(page.getByRole("heading", { level: 2, name: "Basics" })).toBeVisible();
   for (const name of ["Kubernetes Architecture", "Pods", "ReplicaSets", "Deployments", "Namespaces", "Imperative Commands", "Declarative YAML"]) {
-    await expect(page.getByRole("main").getByRole("link", { name, exact: true })).toBeVisible();
+    await expect(page.getByRole("main").getByRole("link", { name: new RegExp(`^\\d\\d ${name} `) })).toBeVisible();
   }
-  await page.getByRole("link", { name: "Deployments" }).click();
+  await page.getByRole("link", { name: /^04 Deployments / }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Deployments" })).toBeVisible();
   for (const name of ["Playground", "Cheatsheet"]) {
     await page.getByRole("navigation").getByRole("link", { name }).click();
@@ -150,14 +150,14 @@ test("quiz gives feedback and can be retried", async ({ page }) => {
   const quiz = page.getByRole("region", { name: "Quiz" });
   await quiz.getByRole("button", { name: "A ReplicaSet owned by the Deployment" }).click();
   await expect(quiz.getByText("Correct.")).toBeVisible();
-  await expect(quiz.getByText("Question 1 of 22")).toBeVisible();
+  await expect(quiz.getByText("question 1 / 22")).toBeVisible();
   await quiz.getByRole("button", { name: "Next question" }).click();
   await quiz.getByRole("button", { name: "The Deployment drops to 2 replicas" }).click();
   await expect(quiz.getByText("Not quite.")).toBeVisible();
   await expect(quiz.getByText(/Desired state is still 3/)).toBeVisible();
   await quiz.getByRole("button", { name: "Retry quiz" }).click();
   await expect(quiz.getByText("0 answered, 0 correct")).toBeVisible();
-  await expect(quiz.getByText("Question 1 of 22")).toBeVisible();
+  await expect(quiz.getByText("question 1 / 22")).toBeVisible();
 });
 
 test("cheatsheet searches and copies", async ({ page, context }) => {
@@ -188,13 +188,13 @@ test("theme can be chosen and is remembered", async ({ page }) => {
   const select = page.getByRole("combobox", { name: "Theme" });
 
   await select.selectOption("dark");
-  expect(await bg()).toBe("rgb(18, 18, 18)");
+  expect(await bg()).toBe("rgb(17, 20, 26)");
   await page.reload();
   await expect(select).toHaveValue("dark");
-  expect(await bg()).toBe("rgb(18, 18, 18)");
+  expect(await bg()).toBe("rgb(17, 20, 26)");
 
   await select.selectOption("light");
-  expect(await bg()).toBe("rgb(250, 250, 249)");
+  expect(await bg()).toBe("rgb(246, 243, 236)");
 
   await select.selectOption("system");
   await page.reload();
