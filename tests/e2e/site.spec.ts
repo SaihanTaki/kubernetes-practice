@@ -25,16 +25,17 @@ test("home links every chapter and the cheatsheet", async ({ page }) => {
   await noHorizontalOverflow(page);
   await expect(page.getByText("(coming soon)")).toHaveCount(0);
   await expect(page.getByRole("heading", { level: 2, name: "Basics" })).toBeVisible();
-  for (const name of ["Kubernetes Architecture", "Pods", "ReplicaSets", "Deployments", "Namespaces", "Imperative Commands", "Declarative YAML"]) {
+  for (const name of ["Introduction to Kubernetes", "Kubernetes Architecture", "Pods", "ReplicaSets", "Deployments", "Namespaces", "Imperative Commands", "Declarative YAML"]) {
     await expect(page.getByRole("main").getByRole("link", { name: new RegExp(`^\\d\\d ${name} `) })).toBeVisible();
   }
-  await page.getByRole("link", { name: /^04 Deployments / }).click();
+  await page.getByRole("link", { name: /^05 Deployments / }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Deployments" })).toBeVisible();
   await page.getByRole("navigation").getByRole("link", { name: "Cheatsheet" }).click();
   await expect(page.getByRole("heading", { level: 1, name: "Cheatsheet" })).toBeVisible();
 });
 
 for (const [slug, title] of [
+  ["intro", "Introduction to Kubernetes"],
   ["architecture", "Kubernetes Architecture"],
   ["pods", "Pods"],
   ["replicasets", "ReplicaSets"],
@@ -55,15 +56,15 @@ test("architecture diagram walkthrough and details", async ({ page }) => {
   // The page has several diagrams; this one is the only one with worker node groups.
   const d = page.getByRole("group", { name: "Worker node 1" }).locator("xpath=ancestor::div[contains(@class,'my-6')][1]");
   await d.getByRole("button", { name: "Start walkthrough" }).click();
-  await expect(d.getByText("Step 1 of 8")).toBeVisible();
+  await expect(d.getByText("Step 1 of 6")).toBeVisible();
   const prev = d.getByRole("button", { name: "Previous step" });
   const next = d.getByRole("button", { name: "Next step" });
   await expect(prev).toBeDisabled();
   await next.click();
-  await expect(d.getByText("Step 2 of 8")).toBeVisible();
+  await expect(d.getByText("Step 2 of 6")).toBeVisible();
   await expect(prev).toBeEnabled();
-  for (let i = 2; i < 8; i++) await next.click();
-  await expect(d.getByText("Step 8 of 8")).toBeVisible();
+  for (let i = 2; i < 6; i++) await next.click();
+  await expect(d.getByText("Step 6 of 6")).toBeVisible();
   await expect(next).toBeDisabled();
   await d.getByRole("button", { name: "Show all" }).click();
   await expect(d.getByRole("button", { name: "Start walkthrough" })).toBeVisible();

@@ -150,7 +150,7 @@ export const cheatsheet: CheatsheetEntry[] = [
     code: "kubectl api-resources",
     language: "bash",
     simulated: false,
-    relatedChapter: "architecture",
+    relatedChapter: "intro",
   },
   {
     id: "get-pod-yaml",
@@ -161,7 +161,7 @@ export const cheatsheet: CheatsheetEntry[] = [
     code: "kubectl get pod toolbox -o yaml",
     language: "bash",
     simulated: true,
-    relatedChapter: "architecture",
+    relatedChapter: "intro",
   },
   {
     id: "describe-pod",

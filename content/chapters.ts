@@ -2,6 +2,7 @@ import { data as architecture } from "./chapters/architecture.data";
 import { data as declarative } from "./chapters/declarative.data";
 import { data as deployments } from "./chapters/deployments.data";
 import { data as imperative } from "./chapters/imperative.data";
+import { data as intro } from "./chapters/intro.data";
 import { data as namespaces } from "./chapters/namespaces.data";
 import { data as pods } from "./chapters/pods.data";
 import { data as replicasets } from "./chapters/replicasets.data";
@@ -21,10 +22,19 @@ export type Chapter = {
 
 export const chapters: Chapter[] = [
   {
+    slug: "intro",
+    section: "Basics",
+    title: "Introduction to Kubernetes",
+    summary: "What Kubernetes does, the objects you will use, and how a manifest names them.",
+    difficulty: "beginner",
+    ready: true,
+    data: intro,
+  },
+  {
     slug: "architecture",
     section: "Basics",
     title: "Kubernetes Architecture",
-    summary: "The control plane, worker nodes, and what happens when you ask for a workload.",
+    summary: "The control plane, the worker nodes, and the container runtime that actually runs your containers.",
     difficulty: "beginner",
     ready: true,
     data: architecture,
