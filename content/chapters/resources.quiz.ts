@@ -378,4 +378,97 @@ export const quiz: QuizQuestion[] = [
     explanation:
       "500m is half a core and 128Mi is 128 mebibytes, both under requests. 50m is a twentieth of a core and 128m of memory is a fraction of a byte; limits sets the ceiling, not the request; 5 is five cores and 128M is in powers of 1000.",
   },
+  {
+    id: "resources-oom-crashloop",
+    topic: "Requests and limits",
+    difficulty: "intermediate",
+    question: "A container is OOMKilled again and again, and its Pod now shows CrashLoopBackOff. What fixes it?",
+    options: [
+      { id: "a", text: "Raise the memory limit to what the app really needs, or fix the leak" },
+      { id: "b", text: "Delete the Pod so it starts fresh" },
+      { id: "c", text: "Add a CPU limit so the app grows more slowly" },
+      { id: "d", text: "Raise the memory request and keep the limit as it is" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "The limit is lower than the app's working set, so every new container grows and is killed at the same point. A fresh Pod has the same limit and is killed the same way. The request only affects placement and eviction; the kill happens at the limit.",
+  },
+  {
+    id: "resources-cpu-limit-idle",
+    topic: "Right-sizing",
+    difficulty: "advanced",
+    question:
+      "A latency-sensitive service has a CPU request and a CPU limit of 200m. The node is mostly idle, yet the service shows latency spikes under bursts. What is the likely cause and a common fix?",
+    options: [
+      { id: "a", text: "It is OOM killed during bursts; raise the memory limit" },
+      { id: "b", text: "The CPU limit throttles it even on an idle node; keep the CPU request and drop the CPU limit" },
+      { id: "c", text: "The request is too low, so the scheduler keeps moving it; raise the request" },
+      { id: "d", text: "The node is overcommitted; add a node" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "A CPU limit caps bursts whatever the node is doing, and throttling shows up as latency, not as errors. Many teams set CPU requests without CPU limits for such services. Running Pods are never moved by the scheduler, and an idle node is not short of CPU.",
+  },
+  {
+    id: "resources-pod-request-sum",
+    topic: "Scheduling",
+    difficulty: "intermediate",
+    question:
+      "A Pod has two containers: app requests cpu 300m and memory 256Mi, and a sidecar requests cpu 100m and memory 64Mi. How much must still be unrequested on a node for the Pod to fit?",
+    options: [
+      { id: "a", text: "300m CPU and 256Mi memory, the largest container" },
+      { id: "b", text: "Only the app's values; sidecars are not counted" },
+      { id: "c", text: "Nothing, because requests are checked per container on different nodes" },
+      { id: "d", text: "400m CPU and 320Mi memory" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "Resources are set per container, and a Pod's request is the sum over its containers. All containers of a Pod run on the same node, so the scheduler needs room for 400m and 320Mi there.",
+  },
+  {
+    id: "resources-evicted-replaced",
+    topic: "QoS",
+    difficulty: "intermediate",
+    question: "A Pod owned by a Deployment is evicted because its node is low on memory. What happens next?",
+    options: [
+      { id: "a", text: "Its ReplicaSet creates a replacement Pod, which the scheduler places wherever its requests fit" },
+      { id: "b", text: "The kubelet restarts the same Pod on the same node once memory is free" },
+      { id: "c", text: "The Pod is moved to another node with its memory contents intact" },
+      { id: "d", text: "The Deployment is scaled down by one replica" },
+    ],
+    correctOptionId: "a",
+    explanation:
+      "Evicted Pods are not restarted in place. The controller notices a missing replica and creates a new Pod, and the scheduler picks a node for it from requests and allocatable. Nothing is migrated, and the desired replica count does not change.",
+  },
+  {
+    id: "resources-limitrange-existing",
+    topic: "LimitRange",
+    difficulty: "beginner",
+    question:
+      "Pods with no resources are already running in a namespace. You then add a LimitRange with default and defaultRequest. What happens to those running Pods?",
+    options: [
+      { id: "a", text: "They restart at once with the default values" },
+      { id: "b", text: "Nothing; they keep their values, and only Pods created later get the defaults" },
+      { id: "c", text: "They are evicted because they have no requests" },
+      { id: "d", text: "They are deleted because they break the LimitRange" },
+    ],
+    correctOptionId: "b",
+    explanation:
+      "LimitRange acts only when a Pod is created. Existing Pods are not changed. They pick up the defaults when they are recreated, for example by the next rollout.",
+  },
+  {
+    id: "resources-yaml-quota-count",
+    topic: "ResourceQuota YAML",
+    difficulty: "intermediate",
+    question: "Which entry under a ResourceQuota's spec.hard allows at most 5 Deployments in the namespace?",
+    options: [
+      { id: "a", text: "maxDeployments: \"5\"" },
+      { id: "b", text: "deployments.replicas: \"5\"" },
+      { id: "c", text: "limits.deployments: \"5\"" },
+      { id: "d", text: "count/deployments.apps: \"5\"" },
+    ],
+    correctOptionId: "d",
+    explanation:
+      "Object counts use count/<resource>.<group>, and Deployments are in the apps group. limits.* keys are for compute resources such as limits.memory, and the other keys do not exist.",
+  },
 ];
