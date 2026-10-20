@@ -17,16 +17,19 @@ export default function RootLayout({ children }: Readonly<{ children: React.Reac
       </head>
       <body className="font-sans antialiased">
         <header className="border-b border-border">
-          <nav className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 gap-y-1 px-4 py-3">
-            <Link href="/" className="mr-auto py-2 font-semibold">
+          <nav className="mx-auto flex max-w-5xl flex-wrap items-center gap-x-6 px-4 py-1">
+            <Link href="/" className="mr-auto flex min-h-11 items-center font-semibold">
               Kubernetes Practice
             </Link>
-            <Link href="/playground" className="py-2 text-muted hover:text-fg">
-              Playground
-            </Link>
-            <Link href="/cheatsheet" className="py-2 text-muted hover:text-fg">
-              Cheatsheet
-            </Link>
+            {/* On phones the links take their own row under the name and theme picker. */}
+            <div className="order-last flex w-full gap-6 sm:order-none sm:w-auto">
+              <Link href="/playground" className="flex min-h-11 items-center text-muted hover:text-fg">
+                Playground
+              </Link>
+              <Link href="/cheatsheet" className="flex min-h-11 items-center text-muted hover:text-fg">
+                Cheatsheet
+              </Link>
+            </div>
             <ThemeSelect />
           </nav>
         </header>

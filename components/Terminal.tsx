@@ -50,7 +50,7 @@ export function Terminal({ execute, label }: Props) {
 
   return (
     <div
-      className="flex h-96 flex-col rounded-md bg-[#16181d] font-mono text-sm text-[#e5e7eb]"
+      className="flex h-72 flex-col rounded-md sm:h-96 bg-[#16181d] font-mono text-sm text-[#e5e7eb]"
       onClick={() => window.getSelection()?.isCollapsed && inputRef.current?.focus()}
     >
       <div ref={scrollRef} className="flex-1 overflow-auto p-3" role="log" aria-live="polite" aria-label={`${label} output`}>

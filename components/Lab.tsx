@@ -50,14 +50,14 @@ function LabView({ lab }: { lab: LabDefinition }) {
 
           <div className="mt-5 space-y-2">
             {lab.hints.map((hint, i) => (
-              <details key={i} className="rounded border border-border px-3 py-2">
-                <summary className="cursor-pointer text-sm">Hint {i + 1}</summary>
-                <p className="mt-2 text-sm">{hint}</p>
+              <details key={i} className="rounded border border-border">
+                <summary className="cursor-pointer px-3 py-3 text-sm">Hint {i + 1}</summary>
+                <p className="px-3 pb-3 text-sm">{hint}</p>
               </details>
             ))}
-            <details className="rounded border border-border px-3 py-2">
-              <summary className="cursor-pointer text-sm">Show solution</summary>
-              <pre className="mt-2 font-mono text-sm whitespace-pre-wrap">{lab.solution.join("\n")}</pre>
+            <details className="rounded border border-border">
+              <summary className="cursor-pointer px-3 py-3 text-sm">Show solution</summary>
+              <pre className="px-3 pb-3 font-mono text-sm whitespace-pre-wrap">{lab.solution.join("\n")}</pre>
             </details>
           </div>
         </div>

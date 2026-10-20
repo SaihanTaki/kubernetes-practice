@@ -30,7 +30,7 @@ export function ThemeSelect() {
   }
 
   return (
-    <label className="flex items-center gap-2 py-2 text-muted">
+    <label className="flex items-center gap-2 text-muted">
       <span className="sr-only sm:not-sr-only">Theme</span>
       <select
         value={theme}

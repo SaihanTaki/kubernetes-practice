@@ -69,7 +69,7 @@ function Box({ box, lit, selected, onSelect }: BoxProps) {
           type="button"
           onClick={() => onSelect(box.id)}
           aria-pressed={pressed}
-          className={`mb-3 block text-left text-sm ${pressed ? "outline-2 outline-offset-2 outline-accent" : ""}`}
+          className={`mb-3 block min-h-11 text-left text-sm ${pressed ? "outline-2 outline-offset-2 outline-accent" : ""}`}
         >
           {header}
         </button>
